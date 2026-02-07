@@ -1,39 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
-
-const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-const resendApiKey = Deno.env.get('RESEND_API_KEY') || ''
-
-const quoteEmailFrom =
-  Deno.env.get('QUOTE_EMAIL_FROM') ||
-  Deno.env.get('BOOKING_CONFIRMATION_EMAIL_FROM') ||
-  Deno.env.get('JOB_WON_EMAIL_FROM') ||
-  'notifications@sydneypremiumcleaning.com.au'
-const quoteEmailReplyTo =
-  Deno.env.get('QUOTE_EMAIL_REPLY_TO') ||
-  Deno.env.get('BOOKING_CONFIRMATION_REPLY_TO') ||
-  'sales@sydneypremiumcleaning.com.au'
-
-const businessName = Deno.env.get('BUSINESS_NAME') || 'Sydney Premium Cleaning'
-const businessEmail = Deno.env.get('BUSINESS_EMAIL') || 'sales@sydneypremiumcleaning.com.au'
-const businessPhone = Deno.env.get('BUSINESS_PHONE') || '0426413984'
-const businessAbn = Deno.env.get('BUSINESS_ABN') || '95 675 300 875'
-const businessOperatingName = Deno.env.get('BUSINESS_OPERATING_NAME') || 'SYDNEY PREMIUM CLEANING AU'
-
-const bankAccountName = Deno.env.get('BANK_ACCOUNT_NAME') || 'LITTLEFISH AU PTY LTD'
-const bankBsb = Deno.env.get('BANK_BSB') || '062692'
-const bankAccountNumber = Deno.env.get('BANK_ACCOUNT_NUMBER') || '82781125'
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': '*',
-    },
-  })
-}
+import { resolveOrgFromRequest, getOrgIntegration, getAutomationSetting, corsHeaders, jsonResponse, jsonError } from '../_shared/org-resolver.ts'
 
 function formatCurrency(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return '—'
@@ -67,6 +32,17 @@ async function sendQuoteEmail(params: {
   remainingLabel: string
   shareUrl?: string | null
   description?: string | null
+  resendApiKey: string
+  quoteEmailFrom: string
+  quoteEmailReplyTo: string
+  businessName: string
+  businessEmail: string
+  businessPhone: string
+  businessAbn: string
+  businessOperatingName: string
+  bankAccountName: string
+  bankBsb: string
+  bankAccountNumber: string
 }) {
   const {
     to,
@@ -84,6 +60,17 @@ async function sendQuoteEmail(params: {
     remainingLabel,
     shareUrl,
     description,
+    resendApiKey,
+    quoteEmailFrom,
+    quoteEmailReplyTo,
+    businessName,
+    businessEmail,
+    businessPhone,
+    businessAbn,
+    businessOperatingName,
+    bankAccountName,
+    bankBsb,
+    bankAccountNumber,
   } = params
 
   const subject = `Cleaning Quote — ${businessName}`
@@ -257,29 +244,38 @@ async function sendQuoteEmail(params: {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      },
-    })
+    return new Response('ok', { headers: corsHeaders })
   }
 
   if (req.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405)
+    return jsonError('Method not allowed', 405)
   }
 
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return jsonResponse({ error: 'Server configuration error' }, 500)
+  try {
+  const { orgId, supabaseAdmin, org } = await resolveOrgFromRequest(req)
+  const quoteSetting = await getAutomationSetting(supabaseAdmin, orgId, 'quote_email')
+  if (!quoteSetting.enabled) {
+    return jsonResponse({ success: true, skipped: 'quote_email_disabled' })
   }
+  const resendConfig = await getOrgIntegration(supabaseAdmin, orgId, 'resend')
+  const resendApiKey = resendConfig.api_key || ''
+  const quoteEmailFrom = resendConfig.from_email || resendConfig.quote_email_from || 'notifications@example.com'
+  const quoteEmailReplyTo = resendConfig.reply_to || resendConfig.quote_email_reply_to || ''
+
+  const businessName = (org.business_name as string) || 'Cleaning Service'
+  const businessEmail = (org.business_email as string) || ''
+  const businessPhone = (org.business_phone as string) || ''
+  const businessAbn = (org.business_abn as string) || ''
+  const businessOperatingName = (org.business_operating_name as string) || businessName
+  const bankAccountName = (org.bank_account_name as string) || ''
+  const bankBsb = (org.bank_bsb as string) || ''
+  const bankAccountNumber = (org.bank_account_number as string) || ''
 
   if (!resendApiKey || !quoteEmailFrom) {
-    return jsonResponse({ error: 'Missing email configuration' }, 500)
+    return jsonError('Missing email configuration for this organization', 500)
   }
 
-  const supabase = createClient(supabaseUrl, supabaseServiceKey)
+  const supabase = supabaseAdmin
 
   let payload: {
     quoteId?: string
@@ -304,55 +300,37 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'quoteId is required' }, 400)
   }
 
+  const quoteFields = [
+            'id',
+            'lead_id',
+            'quote_number',
+            'address',
+            'description',
+            'service',
+            'addons',
+            'custom_addons',
+            'subtotal',
+            'discount_amount',
+            'gst',
+            'total_inc_gst',
+            'deposit_percentage',
+            'deposit_amount',
+            'remaining_balance',
+            'customer_name',
+            'customer_email',
+          ].join(', ')
+
   const { data: quote, error: quoteError } = payload.quoteId
     ? await supabase
         .from('quotes')
-        .select(
-          [
-            'id',
-            'lead_id',
-            'quote_number',
-            'address',
-            'description',
-            'service',
-            'addons',
-            'custom_addons',
-            'subtotal',
-            'discount_amount',
-            'gst',
-            'total_inc_gst',
-            'deposit_percentage',
-            'deposit_amount',
-            'remaining_balance',
-            'customer_name',
-            'customer_email',
-          ].join(', ')
-        )
+        .select(quoteFields)
         .eq('id', payload.quoteId)
+        .eq('org_id', orgId)
         .maybeSingle()
     : await supabase
         .from('quotes')
-        .select(
-          [
-            'id',
-            'lead_id',
-            'quote_number',
-            'address',
-            'description',
-            'service',
-            'addons',
-            'custom_addons',
-            'subtotal',
-            'discount_amount',
-            'gst',
-            'total_inc_gst',
-            'deposit_percentage',
-            'deposit_amount',
-            'remaining_balance',
-            'customer_name',
-            'customer_email',
-          ].join(', ')
-        )
+        .select(quoteFields)
+        .eq('org_id', orgId)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle()
@@ -402,7 +380,23 @@ Deno.serve(async (req) => {
     remainingLabel: formatCurrency(quote.remaining_balance),
     shareUrl: payload.shareUrl,
     description: quote.description,
+    resendApiKey,
+    quoteEmailFrom,
+    quoteEmailReplyTo,
+    businessName,
+    businessEmail,
+    businessPhone,
+    businessAbn,
+    businessOperatingName,
+    bankAccountName,
+    bankBsb,
+    bankAccountNumber,
   })
 
   return jsonResponse({ success: true, test_only: payload.testOnly === true, email_to: targetEmail })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unexpected error'
+    const status = message === 'Unauthorized' ? 401 : 500
+    return jsonError(message, status)
+  }
 })

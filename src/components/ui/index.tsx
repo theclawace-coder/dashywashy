@@ -215,6 +215,41 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
 Input.displayName = 'Input'
 
 // =============================================================================
+// SWITCH
+// =============================================================================
+
+interface SwitchProps {
+  checked: boolean
+  onChange: (checked: boolean) => void
+  disabled?: boolean
+  label?: string
+}
+
+export function Switch({ checked, onChange, disabled = false, label }: SwitchProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) onChange(!checked)
+      }}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+        checked ? 'bg-emerald-500' : 'bg-white/10'
+      } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+          checked ? 'translate-x-5' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  )
+}
+
+// =============================================================================
 // BADGE
 // =============================================================================
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabaseAnonKey, supabaseUrl } from '../lib/supabase'
 import { STANDARD_ADD_ONS } from '../lib/quoteCalculator'
 
 type QuoteRow = {
@@ -66,17 +66,19 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
       setLoading(true)
       setError(null)
       try {
-        const { data, error: fetchError } = await supabase
-          .from('quotes')
-          .select('*')
-          .eq('share_token', shareToken)
-          .single()
+        const response = await fetch(`${supabaseUrl}/functions/v1/get-quote-public?share_token=${shareToken}`, {
+          headers: {
+            apikey: supabaseAnonKey,
+            Authorization: `Bearer ${supabaseAnonKey}`,
+          },
+        })
 
-        if (fetchError) {
-          setError('Quote not found or link expired.')
+        const data = await response.json()
+        if (!response.ok || !data?.quote) {
+          setError(data?.error || 'Quote not found or link expired.')
           return
         }
-        setQuote(data as QuoteRow)
+        setQuote(data.quote as QuoteRow)
       } catch (err) {
         console.error('Failed to load quote', err)
         setError('Unable to load quote.')
@@ -146,10 +148,20 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
 
     const markPaid = async () => {
       try {
-        await supabase.from('quotes').update({ accepted_payment_method: 'card_paid' }).eq('id', quote.id)
-        if (quote.lead_id) {
-          await supabase.from('extracted_leads').update({ status: 'paid' }).eq('id', quote.lead_id)
+        const response = await fetch(`${supabaseUrl}/functions/v1/mark-quote-paid-public`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: supabaseAnonKey,
+            Authorization: `Bearer ${supabaseAnonKey}`,
+          },
+          body: JSON.stringify({ share_token: shareToken }),
+        })
+        const data = await response.json()
+        if (!response.ok || !data?.success) {
+          throw new Error(data?.error || 'Failed to mark quote as paid')
         }
+
         setQuote({ ...quote, accepted_payment_method: 'card_paid' })
         setInfoMessage('Payment received. Thank you!')
       } catch (err) {
@@ -169,23 +181,28 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
     setIsAccepting(true)
     setInfoMessage(null)
     try {
-      const { data, error: updateError } = await supabase
-        .from('quotes')
-        .update({
-          accepted_at: new Date().toISOString(),
+      const response = await fetch(`${supabaseUrl}/functions/v1/accept-quote-public`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+        },
+        body: JSON.stringify({
+          share_token: shareToken,
           accepted_name: acceptName,
           accepted_signature: acceptName,
           accepted_checkbox: true,
           accepted_date: acceptDate,
           accepted_payment_method: paymentMethod,
-        })
-        .eq('share_token', shareToken)
-        .select('*')
-        .single()
-
-      if (updateError) throw updateError
-      setQuote(data as QuoteRow)
-      return data as QuoteRow
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok || !data?.quote) {
+        throw new Error(data?.error || 'Could not record acceptance')
+      }
+      setQuote(data.quote as QuoteRow)
+      return data.quote as QuoteRow
     } catch (err) {
       console.error('Accept failed', err)
       setInfoMessage('Could not record acceptance. Please try again.')
@@ -222,12 +239,8 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
         return
       }
 
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://etiaoqskgplpfydblzne.supabase.co'
-      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0aWFvcXNrZ3BscGZ5ZGJsem5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMzI0NzAsImV4cCI6MjA4MjgwODQ3MH0.c-AlsveEx_bxVgEivga3PRrBp5ylY3He9EJXbaa2N2c'
-
       // Create Stripe Payment Link
-      const amountCents = Math.round(updated.total_inc_gst * 100)
-      const res = await fetch(`${supabaseUrl}/functions/v1/create-payment-link`, {
+      const res = await fetch(`${supabaseUrl}/functions/v1/create-payment-link-public`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -235,12 +248,7 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
           Authorization: `Bearer ${supabaseAnonKey}`,
         },
         body: JSON.stringify({
-          amount_cents: amountCents,
-          currency: 'aud',
-          quoteId: updated.id,
-          customerName: updated.customer_name || acceptName,
-          customerEmail: updated.customer_email || '',
-          description: `Cleaning Quote ${updated.quote_number || updated.id}`,
+          share_token: shareToken,
           success_url: `${window.location.origin}?quote=${shareToken}&payment_status=success`,
           cancel_url: `${window.location.origin}?quote=${shareToken}&payment_status=cancelled`,
         }),

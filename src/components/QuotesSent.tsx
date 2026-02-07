@@ -7,6 +7,7 @@
 
 import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 import { downloadReceiptPdf } from '../lib/receiptPdf'
 import { GlassCard, Button, Badge, useToast, StatCard } from './ui'
 
@@ -57,6 +58,7 @@ type TimeFilter = (typeof TIME_FILTERS)[number]
 
 export default function QuotesSent() {
   const { addToast } = useToast()
+  const { currentOrg } = useAuth()
   const [quotes, setQuotes] = useState<QuoteRecord[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [receiptGeneratingId, setReceiptGeneratingId] = useState<string | null>(null)
@@ -72,9 +74,15 @@ export default function QuotesSent() {
   const fetchQuotes = async () => {
     try {
       setIsLoading(true)
+      if (!currentOrg) {
+        setQuotes([])
+        setIsLoading(false)
+        return
+      }
       const { data, error: quotesError } = await supabase
         .from('quotes')
         .select(`*, lead:extracted_leads (name, phone_number, email, status)`)
+        .eq('org_id', currentOrg.id)
         .is('base_quote_id', null)
         .order('created_at', { ascending: false })
 
@@ -88,13 +96,18 @@ export default function QuotesSent() {
   }
 
   useEffect(() => {
+    if (!currentOrg) return
     fetchQuotes()
     const channel = supabase
       .channel('quotes_sent_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'quotes' }, () => fetchQuotes())
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'quotes', filter: 'org_id=eq.' + currentOrg.id },
+        () => fetchQuotes()
+      )
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [])
+  }, [currentOrg])
 
   const filteredQuotes = useMemo(() => {
     let result = quotes

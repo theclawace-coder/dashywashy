@@ -1,7 +1,7 @@
 # View Email Logs - Simple Text Format
 # This script displays recent emails in a readable text format
 
-$supabaseUrl = "https://etiaoqskgplpfydblzne.supabase.co"
+$supabaseUrl = "https://jditayvwnlxktotfybvk.supabase.co"
 $supabaseKey = Read-Host "Enter your Supabase anon key (or press Enter to use environment variable)"
 
 if ([string]::IsNullOrWhiteSpace($supabaseKey)) {

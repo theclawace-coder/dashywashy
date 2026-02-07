@@ -52,7 +52,7 @@ Dialpad requires **two separate API calls**:
 **Solution:**
 1. Log into your Dialpad account
 2. Go to **Settings** → **Integrations** → **Webhooks** (or **Admin** → **Integrations**)
-3. Find your webhook: `https://etiaoqskgplpfydblzne.supabase.co/functions/v1/dialpad-webhook`
+3. Find your webhook: `https://jditayvwnlxktotfybvk.supabase.co/functions/v1/dialpad-webhook`
 4. **Enable/Select these events:**
    - `call.ended` (or "Call Ended")
    - `sms.created` (or "SMS Created")
@@ -135,7 +135,7 @@ $body = @{
     }
 } | ConvertTo-Json
 
-Invoke-RestMethod -Uri "https://etiaoqskgplpfydblzne.supabase.co/functions/v1/dialpad-webhook" `
+Invoke-RestMethod -Uri "https://jditayvwnlxktotfybvk.supabase.co/functions/v1/dialpad-webhook" `
     -Method Post `
     -Headers @{"Content-Type" = "application/json"} `
     -Body $body

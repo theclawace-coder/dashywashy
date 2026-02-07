@@ -1,55 +1,29 @@
-const MAPBOX_TOKEN = Deno.env.get('MAPBOX_TOKEN') || ''
+import { resolveOrgFromRequest, getOrgIntegration, corsHeaders, jsonResponse, jsonError } from '../_shared/org-resolver.ts'
 
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': '*',
-    },
-  })
-}
-
-Deno.serve((req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      },
-    })
+    return new Response('ok', { status: 200, headers: corsHeaders })
   }
 
   if (req.method !== 'GET') {
     return jsonResponse({ error: 'Method not allowed' }, 405)
   }
 
-  if (!MAPBOX_TOKEN) {
-    return jsonResponse({ error: 'MAPBOX_TOKEN secret is not set' }, 500)
+  try {
+    const { orgId, supabaseAdmin } = await resolveOrgFromRequest(req)
+
+    const mapboxConfig = await getOrgIntegration(supabaseAdmin, orgId, 'mapbox')
+    const token = mapboxConfig.token || mapboxConfig.api_key || Deno.env.get('MAPBOX_TOKEN') || ''
+
+    if (!token) {
+      return jsonResponse({ error: 'Mapbox token is not configured' }, 500)
+    }
+
+    return jsonResponse({ token })
+  } catch (error) {
+    if (error instanceof Error && (error.message === 'Unauthorized' || error.message.includes('not a member'))) {
+      return jsonError(error.message, 401)
+    }
+    return jsonResponse({ error: error instanceof Error ? error.message : 'Unknown error' }, 500)
   }
-
-  return jsonResponse({ token: MAPBOX_TOKEN })
 })
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
 import { playNewLeadSound } from '../lib/sounds'
 
 type LeadSummary = {
@@ -11,12 +12,8 @@ type LeadSummary = {
 }
 
 const FLASH_INTERVAL_MS = 900
-const dialpadUserId = '6452247499866112'
-const dialpadUrl = `https://dialpad.com/api/v2/users/${dialpadUserId}/initiate_call`
-const dialpadToken =
-  'NNRYnLXqJgkWXePcCG2SGCVzHfuB6kxAqQATPvnmn3x6k5RevHUCPdF8zF8jqXsssuyG67bEALxZH9TACsq4aARA46VL4yZ246Kf'
-
 export default function NewLeadNotifier() {
+  const { currentOrg } = useAuth()
   const [queue, setQueue] = useState<LeadSummary[]>([])
   const [isVisible, setIsVisible] = useState(false)
   const [callError, setCallError] = useState<string | null>(null)
@@ -29,9 +26,10 @@ export default function NewLeadNotifier() {
 
   // Subscribe to new extracted leads once globally
   useEffect(() => {
+    if (!currentOrg) return
     const channel = supabase
       .channel('extracted_leads_global_notifier')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'extracted_leads' }, (payload) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id }, (payload) => {
         const lead = payload.new as any
         if (!lead?.id) return
         const summary: LeadSummary = {
@@ -103,12 +101,12 @@ export default function NewLeadNotifier() {
     setCallError(null)
     setIsCalling(true)
     try {
-      const response = await fetch(dialpadUrl, {
+      const response = await fetch(`${supabaseUrl}/functions/v1/call-lead`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          accept: 'application/json',
-          authorization: `Bearer ${dialpadToken}`,
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
         },
         body: JSON.stringify({ phone_number: phoneNumber }),
       })

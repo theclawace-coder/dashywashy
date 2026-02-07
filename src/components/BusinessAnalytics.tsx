@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useAuth } from '../lib/auth'
 import { supabase } from '../lib/supabase'
 import { GlassCard, Button, Skeleton, Badge } from './ui'
 import {
@@ -6,7 +7,6 @@ import {
   endOfMonth,
   subMonths,
   format,
-  differenceInDays,
   parseISO,
 } from 'date-fns'
 
@@ -28,7 +28,7 @@ type LeadRecord = {
   id: string
   status: string | null
   created_at: string
-  first_contact: string | null
+  first_contact: string | number | null
 }
 
 type BookingOccurrence = {
@@ -104,6 +104,17 @@ function formatPercent(value: number): string {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat('en-AU').format(Math.round(value))
+}
+
+function parseTimestamp(value: string | number | null | undefined): Date | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'number') {
+    const ms = value > 1e10 ? value : value * 1000
+    const d = new Date(ms)
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d
 }
 
 function getGrowthIndicator(current: number, previous: number) {
@@ -389,6 +400,7 @@ function MiniStatCard({
 }
 
 export default function BusinessAnalytics() {
+  const { currentOrg } = useAuth()
   const [selectedMonth, setSelectedMonth] = useState(MONTH_OPTIONS[0].value)
   const [compareMonth, setCompareMonth] = useState(MONTH_OPTIONS[1]?.value || MONTH_OPTIONS[0].value)
   const [adSpend, setAdSpend] = useState(1000)
@@ -423,6 +435,7 @@ export default function BusinessAnalytics() {
             lead:extracted_leads (status)
           `
           )
+          .eq('org_id', currentOrg!.id)
           .gte('created_at', lookbackStart.toISOString())
           .is('base_quote_id', null)
           .order('created_at', { ascending: false }),
@@ -430,12 +443,14 @@ export default function BusinessAnalytics() {
         supabase
           .from('extracted_leads')
           .select('id, status, created_at, first_contact')
+          .eq('org_id', currentOrg!.id)
           .gte('created_at', lookbackStart.toISOString())
           .order('created_at', { ascending: false }),
 
         supabase
           .from('booking_occurrences')
           .select('id, status, payment_status, payment_amount_cents, start_at, created_at')
+          .eq('org_id', currentOrg!.id)
           .gte('start_at', lookbackStart.toISOString())
           .order('start_at', { ascending: false }),
       ])
@@ -495,10 +510,12 @@ export default function BusinessAnalytics() {
       const quotedLeadIds = new Set(monthQuotes.filter((q) => q.lead_id).map((q) => q.lead_id))
       const quotedLeads = quotedLeadIds.size
 
-      // Won jobs (quotes with accepted_payment_method or lead status = Won)
-      const wonQuotes = monthQuotes.filter(
-        (q) => q.accepted_payment_method || (q.lead as any)?.status === 'Won'
-      )
+      // Won jobs (quotes with accepted payment or lead status marked as won/completed)
+      const wonStatuses = new Set(['Job Won', 'Jobs Completed', 'Won'])
+      const wonQuotes = monthQuotes.filter((q) => {
+        const leadStatus = (q.lead as any)?.status
+        return q.accepted_payment_method || (leadStatus && wonStatuses.has(leadStatus))
+      })
       const wonJobs = wonQuotes.length
       const wonValue = wonQuotes.reduce((sum, q) => sum + (q.total_inc_gst || 0), 0)
       const totalProfit = wonQuotes.reduce((sum, q) => sum + (q.profit || 0), 0)
@@ -523,15 +540,14 @@ export default function BusinessAnalytics() {
 
       // Lead to call time
       const leadTimes = monthLeads
-        .filter((l) => l.first_contact)
         .map((l) => {
-          const created = parseISO(l.created_at)
-          const firstContact = parseISO(l.first_contact!)
-          return differenceInDays(firstContact, created) === 0
-            ? (firstContact.getTime() - created.getTime()) / (1000 * 60) // minutes
-            : null
+          const created = parseTimestamp(l.created_at)
+          const firstContact = parseTimestamp(l.first_contact)
+          if (!created || !firstContact) return null
+          const diffMinutes = (firstContact.getTime() - created.getTime()) / (1000 * 60)
+          return Number.isFinite(diffMinutes) ? diffMinutes : null
         })
-        .filter((t) => t !== null && t >= 0 && t < 1440) as number[] // only same day, less than 24h
+        .filter((t): t is number => t !== null && t >= 0 && t <= 60 * 24 * 7) // within 7 days
 
       const avgLeadToCall = leadTimes.length > 0 ? leadTimes.reduce((a, b) => a + b, 0) / leadTimes.length : 0
 
@@ -541,7 +557,7 @@ export default function BusinessAnalytics() {
       const combinedQuoteCount = totalQuotes
       const combinedQuoteValue = totalQuoteValue
       const combinedAvgQuoteValue = avgQuoteValue
-      const salesTotal = wonValue + paidValue + completedRevenue
+      const salesTotal = paidValue > 0 ? paidValue : completedRevenue > 0 ? completedRevenue : wonValue
       const salesExpenses = salesTotal * (1 - profitMargin)
       const salesProfit = salesTotal - salesExpenses
 
@@ -734,6 +750,8 @@ export default function BusinessAnalytics() {
     )
   }
 
+  if (!currentOrg) return null
+
   return (
     <div className="min-h-screen p-4 md:p-6 lg:p-8">
       <div className="max-w-[1600px] mx-auto space-y-8">
@@ -880,9 +898,9 @@ export default function BusinessAnalytics() {
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <MiniStatCard
-              title="Total Sales (Month)"
+              title="Paid Revenue (Month)"
               value={formatCurrency(currentMonthData?.salesTotal || 0)}
-              subtitle="Sold this month"
+              subtitle="Collected this month"
               color="emerald"
             />
             <MiniStatCard

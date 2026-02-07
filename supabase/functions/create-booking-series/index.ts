@@ -14,23 +14,7 @@
 // }
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
-
-const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-const resendApiKey = Deno.env.get('RESEND_API_KEY') || ''
-const jobWonNotifyEmail = Deno.env.get('JOB_WON_NOTIFY_EMAIL') || ''
-const jobWonEmailFrom =
-  Deno.env.get('JOB_WON_EMAIL_FROM') || 'notifications@sydneypremiumcleaning.com.au'
-const jobWonEmailReplyTo =
-  Deno.env.get('JOB_WON_EMAIL_REPLY_TO') || 'sales@sydneypremiumcleaning.com.au'
-const jobWonAdminUrl =
-  Deno.env.get('JOB_WON_ADMIN_URL') || Deno.env.get('ADMIN_DASHBOARD_URL') || ''
-const bookingCustomerEmailFrom =
-  Deno.env.get('BOOKING_CONFIRMATION_EMAIL_FROM') || jobWonEmailFrom
-const bookingCustomerReplyTo = Deno.env.get('BOOKING_CONFIRMATION_REPLY_TO') || ''
-const businessName = Deno.env.get('BUSINESS_NAME') || 'Sydney Premium Cleaning'
-const businessEmail = Deno.env.get('BUSINESS_EMAIL') || 'sales@sydneypremiumcleaning.com.au'
-const businessPhone = Deno.env.get('BUSINESS_PHONE') || '0426413984'
+import { resolveOrgFromRequest, getOrgIntegration, corsHeaders, jsonResponse as _jr, jsonError } from '../_shared/org-resolver.ts'
 
 type RepeatType = 'none' | 'weekly' | 'fortnightly' | '3-weekly' | 'monthly' | '2-monthly'
 
@@ -139,7 +123,14 @@ async function sendJobWonEmail(params: {
   timezone: string
   bookingNotes: string | null
   toOverride?: string | null
+  resendApiKey: string
+  jobWonNotifyEmail: string
+  jobWonEmailFrom: string
+  jobWonEmailReplyTo: string
+  jobWonAdminUrl: string
+  businessName: string
 }): Promise<{ sent: boolean; error?: string }> {
+  const { resendApiKey, jobWonNotifyEmail, jobWonEmailFrom, jobWonEmailReplyTo, jobWonAdminUrl, businessName } = params
   const targetEmail = params.toOverride || jobWonNotifyEmail
   if (!resendApiKey || !targetEmail || !jobWonEmailFrom) {
     console.log('Job won email skipped: missing RESEND_API_KEY / JOB_WON_NOTIFY_EMAIL / JOB_WON_EMAIL_FROM')
@@ -154,10 +145,10 @@ async function sendJobWonEmail(params: {
     .join(', ')
   const occurrencesTotal = occurrenceDates.length
 
-  const subject = `Sydney Premium Cleaning — Job Won: ${lead.name || 'Lead'}`
+  const subject = `${businessName} — Job Won: ${lead.name || 'Lead'}`
 
   const text = [
-    `Sydney Premium Cleaning — Job Won`,
+    `${businessName} — Job Won`,
     ``,
     `Lead: ${lead.name || 'Unknown'}`,
     `Email: ${lead.email || '—'}`,
@@ -305,7 +296,14 @@ async function sendCustomerBookingConfirmationEmail(params: {
   durationMinutes: number
   timezone: string
   bookingNotes: string | null
+  resendApiKey: string
+  bookingCustomerEmailFrom: string
+  bookingCustomerReplyTo: string
+  businessName: string
+  businessEmail: string
+  businessPhone: string
 }) {
+  const { resendApiKey, bookingCustomerEmailFrom, bookingCustomerReplyTo, businessName, businessEmail, businessPhone } = params
   if (!resendApiKey || !bookingCustomerEmailFrom) {
     console.log('Customer confirmation skipped: missing RESEND_API_KEY / BOOKING_CONFIRMATION_EMAIL_FROM')
     return { sent: false, error: 'missing_email_configuration' }
@@ -614,27 +612,29 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 Deno.serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response('ok', {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      },
-    })
+    return new Response('ok', { headers: corsHeaders })
   }
 
   if (req.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405)
+    return jsonError('Method not allowed', 405)
   }
 
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return jsonResponse({ error: 'Server configuration error' }, 500)
-  }
+  try {
+  const { orgId, supabaseAdmin, org } = await resolveOrgFromRequest(req)
+  const resendConfig = await getOrgIntegration(supabaseAdmin, orgId, 'resend')
+  const resendApiKey = resendConfig.api_key || ''
+  const jobWonNotifyEmail = resendConfig.job_won_notify_email || (org.business_email as string) || ''
+  const jobWonEmailFrom = resendConfig.from_email || 'notifications@example.com'
+  const jobWonEmailReplyTo = resendConfig.reply_to || ''
+  const jobWonAdminUrl = (org.admin_dashboard_url as string) || ''
+  const bookingCustomerEmailFrom = resendConfig.booking_confirmation_from || jobWonEmailFrom
+  const bookingCustomerReplyTo = resendConfig.booking_confirmation_reply_to || ''
+  const businessName = (org.business_name as string) || 'Cleaning Service'
+  const businessEmail = (org.business_email as string) || ''
+  const businessPhone = (org.business_phone as string) || ''
 
-  const supabase = createClient(supabaseUrl, supabaseServiceKey)
+  const supabase = supabaseAdmin
 
   let payload: CreateBookingPayload
   try {
@@ -715,6 +715,12 @@ Deno.serve(async (req) => {
         timezone,
         bookingNotes: notes,
         toOverride: payload.testEmailTo || null,
+        resendApiKey,
+        jobWonNotifyEmail,
+        jobWonEmailFrom,
+        jobWonEmailReplyTo,
+        jobWonAdminUrl,
+        businessName,
       })
 
       return jsonResponse({ success: true, test_only: true, send_result: sendResult })
@@ -743,6 +749,7 @@ Deno.serve(async (req) => {
         service_address: quoteAddress,
         service_lat: quoteLat,
         service_lng: quoteLng,
+        org_id: orgId,
       })
       .select()
       .single()
@@ -830,6 +837,12 @@ Deno.serve(async (req) => {
       repeatType,
       timezone,
       bookingNotes: notes,
+      resendApiKey,
+      jobWonNotifyEmail,
+      jobWonEmailFrom,
+      jobWonEmailReplyTo,
+      jobWonAdminUrl,
+      businessName,
     })
 
     await sendCustomerBookingConfirmationEmail({
@@ -840,6 +853,12 @@ Deno.serve(async (req) => {
       durationMinutes,
       timezone,
       bookingNotes: notes,
+      resendApiKey,
+      bookingCustomerEmailFrom,
+      bookingCustomerReplyTo,
+      businessName,
+      businessEmail,
+      businessPhone,
     })
 
     return jsonResponse({
@@ -863,7 +882,12 @@ Deno.serve(async (req) => {
   } catch (err) {
     console.error('Unexpected error:', err)
     const message = err instanceof Error ? err.message : 'Unexpected error'
-    return jsonResponse({ error: message }, 500)
+    return jsonError(message, 500)
+  }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unexpected error'
+    const status = message === 'Unauthorized' ? 401 : 500
+    return jsonError(message, status)
   }
 })
 

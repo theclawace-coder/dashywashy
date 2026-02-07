@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "driver.js/dist/driver.css";
 
 /* =============================================================================
    DESIGN SYSTEM: Apple VisionOS + iOS 18 Glassmorphism CRM
@@ -62,6 +63,9 @@
   --space-lg: 1.5rem;
   --space-xl: 2rem;
   --space-2xl: 3rem;
+
+  /* Layout */
+  --nav-width: clamp(200px, 22vw, 280px);
   
   /* Radius scale */
   --radius-sm: 0.5rem;
@@ -909,6 +913,11 @@ body {
 /* -----------------------------------------------------------------------------
    NAVIGATION
    ----------------------------------------------------------------------------- */
+.app-shell {
+  min-height: 100vh;
+  position: relative;
+}
+
 .nav-main {
   position: sticky;
   top: 0;
@@ -916,6 +925,16 @@ body {
   background: var(--glass-bg);
   backdrop-filter: blur(24px) saturate(180%);
   border-bottom: 1px solid var(--glass-border);
+}
+
+.nav-shell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 3.5rem;
+  height: auto;
+  gap: 1rem;
+  flex-wrap: wrap;
 }
 
 .nav-item {
@@ -964,6 +983,37 @@ body {
 @keyframes badge-pulse {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.1); }
+}
+
+@media (min-width: 1024px) {
+  .app-shell {
+    padding-left: var(--nav-width);
+  }
+
+  .nav-main {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: var(--nav-width);
+    border-right: 1px solid var(--glass-border);
+    border-bottom: none;
+  }
+
+  .nav-shell {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    height: 100%;
+    padding: 1rem 0.75rem;
+    gap: 1rem;
+    flex-wrap: nowrap;
+  }
+
+  .nav-item {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 /* Dropdown portal - ensures proper z-index stacking */
@@ -1317,4 +1367,393 @@ body {
   border-radius: 50%;
   background: currentColor;
   animation: live-pulse 2s ease-in-out infinite;
+}
+
+/* -----------------------------------------------------------------------------
+   Guided Tour (Driver.js)
+   ----------------------------------------------------------------------------- */
+.tour-popover {
+  background: var(--glass-bg-elevated);
+  color: var(--color-text);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(24px);
+}
+
+.tour-popover .driver-popover-title {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.tour-popover .driver-popover-description {
+  color: var(--color-text-secondary);
+}
+
+.tour-popover .driver-popover-footer {
+  border-top: 1px solid var(--glass-border);
+  padding-top: 10px;
+}
+
+.tour-popover .driver-popover-progress-text {
+  color: var(--color-text-muted);
+}
+
+.tour-popover .driver-prev-btn,
+.tour-popover .driver-next-btn,
+.tour-popover .driver-close-btn {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 6px 12px;
+}
+
+.tour-popover .driver-prev-btn:hover,
+.tour-popover .driver-next-btn:hover,
+.tour-popover .driver-close-btn:hover {
+  background: var(--color-surface-hover);
+}
+
+/* Enhanced Tour Popover Styling */
+.tour-popover {
+  border-radius: 16px !important;
+  padding: 0 !important;
+  overflow: hidden;
+  animation: tour-popover-enter 0.3s ease-out;
+}
+
+@keyframes tour-popover-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.tour-popover .driver-popover-title {
+  font-size: 1.1rem;
+  padding: 16px 16px 8px;
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.1), rgba(167, 139, 250, 0.1));
+}
+
+.tour-popover .driver-popover-description {
+  padding: 0 16px 16px;
+  line-height: 1.5;
+}
+
+.tour-popover .driver-popover-footer {
+  padding: 12px 16px !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.tour-popover .driver-popover-progress-text {
+  font-size: 0.8rem;
+  flex: 1;
+}
+
+.tour-popover .driver-close-btn {
+  position: absolute !important;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.tour-popover .driver-close-btn:hover {
+  opacity: 1;
+}
+
+/* Skip Tour Button */
+.tour-skip-btn {
+  background: transparent !important;
+  border: none !important;
+  color: var(--color-text-muted) !important;
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 4px 8px !important;
+}
+
+.tour-skip-btn:hover {
+  color: var(--color-text-secondary) !important;
+  text-decoration: underline;
+}
+
+/* Chapter badge + progress bar */
+.tour-popover-chapter {
+  margin: 12px 16px 0;
+  align-self: flex-start;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  background: rgba(148, 163, 184, 0.15);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.tour-progress {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 16px 10px;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.tour-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #60a5fa, #a78bfa, #f472b6);
+  transition: width 0.3s ease;
+}
+
+.tour-popover .driver-popover-footer-buttons {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* -----------------------------------------------------------------------------
+   Tour Mascot
+   ----------------------------------------------------------------------------- */
+.tour-mascot {
+  position: fixed;
+  z-index: 100002;
+  pointer-events: none;
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.tour-mascot-left {
+  left: 20px;
+  bottom: 20px;
+}
+
+.tour-mascot-right {
+  right: 20px;
+  bottom: 20px;
+}
+
+.tour-mascot-enter {
+  animation: mascot-bounce-in 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes mascot-bounce-in {
+  0% {
+    opacity: 0;
+    transform: scale(0) translateY(50px);
+  }
+  50% {
+    transform: scale(1.1) translateY(-10px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.tour-mascot-character {
+  position: relative;
+  width: 100px;
+  height: 120px;
+}
+
+.tour-mascot-svg {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 4px 12px rgba(96, 165, 250, 0.3));
+}
+
+/* Mascot body bounce animation */
+.mascot-body {
+  animation: mascot-breathe 3s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes mascot-breathe {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(1.03); }
+}
+
+/* Sparkle animations */
+.mascot-sparkles .sparkle {
+  animation: sparkle-twinkle 2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.sparkle-1 { animation-delay: 0s; }
+.sparkle-2 { animation-delay: 0.5s; }
+.sparkle-3 { animation-delay: 1s; }
+.sparkle-4 { animation-delay: 1.5s; }
+
+@keyframes sparkle-twinkle {
+  0%, 100% { opacity: 1; transform: scale(1) rotate(0deg); }
+  50% { opacity: 0.5; transform: scale(0.8) rotate(180deg); }
+}
+
+/* Arm animations */
+.arm-wave {
+  animation: arm-wave 1s ease-in-out infinite;
+  transform-origin: 25px 70px;
+}
+
+@keyframes arm-wave {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-20deg); }
+}
+
+.arm-point {
+  animation: arm-point 0.8s ease-in-out infinite;
+  transform-origin: 95px 70px;
+}
+
+@keyframes arm-point {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(5px); }
+}
+
+.arm-celebrate-left,
+.arm-celebrate-right {
+  animation: arm-celebrate 0.5s ease-in-out infinite alternate;
+}
+
+.arm-celebrate-right {
+  animation-delay: 0.1s;
+}
+
+@keyframes arm-celebrate {
+  0% { transform: rotate(-5deg); }
+  100% { transform: rotate(5deg); }
+}
+
+/* Floating particles */
+.mascot-particles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mascot-particles .particle {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: linear-gradient(135deg, #60a5fa, #a78bfa);
+  border-radius: 50%;
+  animation: particle-float 3s ease-in-out infinite;
+}
+
+.particle-1 { top: 10%; left: 20%; animation-delay: 0s; }
+.particle-2 { top: 30%; right: 10%; animation-delay: 1s; }
+.particle-3 { bottom: 20%; left: 10%; animation-delay: 2s; }
+
+@keyframes particle-float {
+  0%, 100% {
+    opacity: 0;
+    transform: translateY(0) scale(0);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(-10px) scale(1);
+  }
+  80% {
+    opacity: 1;
+    transform: translateY(-30px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-40px) scale(0);
+  }
+}
+
+/* Speech bubble */
+.tour-mascot-bubble {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 10px;
+  background: var(--glass-bg-elevated);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 12px 16px;
+  max-width: 200px;
+  box-shadow: var(--shadow-lg);
+  animation: bubble-pop-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.tour-mascot-bubble-left {
+  left: 0;
+}
+
+.tour-mascot-bubble-right {
+  right: 0;
+}
+
+@keyframes bubble-pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.tour-mascot-message {
+  font-size: 0.9rem;
+  color: var(--color-text);
+  line-height: 1.4;
+}
+
+.tour-mascot-bubble-tail {
+  position: absolute;
+  bottom: -8px;
+  left: 20px;
+  width: 16px;
+  height: 16px;
+  background: var(--glass-bg-elevated);
+  border: 1px solid var(--glass-border);
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg);
+}
+
+.tour-mascot-bubble-right .tour-mascot-bubble-tail {
+  left: auto;
+  right: 20px;
+}
+
+/* Eyes blinking */
+.mascot-eyes {
+  animation: eyes-blink 4s ease-in-out infinite;
+}
+
+@keyframes eyes-blink {
+  0%, 45%, 55%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@media (max-width: 640px) {
+  .tour-popover {
+    max-width: 92vw;
+  }
+  .tour-mascot {
+    display: none;
+  }
 }

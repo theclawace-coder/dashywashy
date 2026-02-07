@@ -1,12 +1,5 @@
-// Supabase Edge Function to create a Stripe Payment Link.
-// Set secrets in your Supabase project:
-//   STRIPE_SECRET_KEY (required)
-//   STRIPE_SUCCESS_URL (optional)
-//   STRIPE_CANCEL_URL (optional)
-// Expects POST with JSON:
-//   { amount_cents, currency?, occurrenceId?, quoteId?, customerName?, customerEmail?, description?, success_url?, cancel_url? }
-
 import Stripe from 'https://esm.sh/stripe@12.18.0?target=deno'
+import { resolveOrgFromRequest, getOrgIntegration, corsHeaders, jsonResponse, jsonError } from '../_shared/org-resolver.ts'
 
 type CreatePaymentLinkPayload = {
   amount_cents: number
@@ -20,54 +13,33 @@ type CreatePaymentLinkPayload = {
   cancel_url?: string
 }
 
-const stripeSecret = Deno.env.get('STRIPE_SECRET_KEY') || ''
-const defaultSuccess = Deno.env.get('STRIPE_SUCCESS_URL') || 'https://example.com/payment-success'
-const defaultCancel = Deno.env.get('STRIPE_CANCEL_URL') || 'https://example.com/payment-cancel'
-
-if (!stripeSecret) {
-  console.error('Missing STRIPE_SECRET_KEY env')
-}
-
-const stripe = new Stripe(stripeSecret, {
-  apiVersion: '2024-06-20',
-})
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': '*',
-    },
-  })
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      },
-    })
+    return new Response('ok', { headers: corsHeaders })
   }
 
   if (req.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405)
+    return jsonError('Method not allowed', 405)
   }
 
+  try {
+  const { orgId, supabaseAdmin, org } = await resolveOrgFromRequest(req)
+  const stripeConfig = await getOrgIntegration(supabaseAdmin, orgId, 'stripe')
+  const stripeSecret = stripeConfig.secret_key || ''
+  const defaultSuccess = stripeConfig.success_url || 'https://example.com/payment-success'
+  const defaultCancel = stripeConfig.cancel_url || 'https://example.com/payment-cancel'
+
   if (!stripeSecret) {
-    return jsonResponse({ error: 'Server missing STRIPE_SECRET_KEY' }, 500)
+    return jsonError('Stripe not configured for this organization', 500)
   }
+
+  const stripe = new Stripe(stripeSecret, { apiVersion: '2024-06-20' })
 
   let payload: CreatePaymentLinkPayload
   try {
     payload = await req.json()
   } catch {
-    return jsonResponse({ error: 'Invalid JSON body' }, 400)
+    return jsonError('Invalid JSON body', 400)
   }
 
   const amount = Number(payload.amount_cents)
@@ -106,7 +78,12 @@ Deno.serve(async (req) => {
   } catch (err) {
     console.error('Stripe payment link error:', err)
     const message = err instanceof Error ? err.message : 'Stripe error'
-    return jsonResponse({ error: message }, 500)
+    return jsonError(message, 500)
+  }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unexpected error'
+    const status = message === 'Unauthorized' ? 401 : 500
+    return jsonError(message, status)
   }
 })
 

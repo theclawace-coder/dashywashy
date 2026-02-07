@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 
 type SearchResult = {
   id: string
@@ -23,6 +24,7 @@ function ResultBadge({ type }: { type: SearchResult['type'] }) {
 }
 
 export default function GlobalSearch() {
+  const { currentOrg } = useAuth()
   const [isOpen, setIsOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [isSearching, setIsSearching] = useState(false)
@@ -66,12 +68,18 @@ export default function GlobalSearch() {
     setIsSearching(true)
     setError(null)
     try {
+      if (!currentOrg) {
+        setResults([])
+        return
+      }
+
       const safe = trimmedQuery
 
       const [leadRes, bookingRes, cleanerRes] = await Promise.all([
         supabase
           .from('extracted_leads')
           .select('id, name, email, phone_number, status, created_at')
+          .eq('org_id', currentOrg.id)
           .or(
             `name.ilike.%${safe}%,email.ilike.%${safe}%,phone_number.ilike.%${safe}%,region_notes.ilike.%${safe}%,status.ilike.%${safe}%`
           )
@@ -90,6 +98,7 @@ export default function GlobalSearch() {
             )
           `
           )
+          .eq('org_id', currentOrg.id)
           .or(
             `status.ilike.%${safe}%,series.title.ilike.%${safe}%,series.lead.name.ilike.%${safe}%`
           )
@@ -98,6 +107,7 @@ export default function GlobalSearch() {
         supabase
           .from('cleaners')
           .select('id, full_name, phone, email, base_location_text, active')
+          .eq('org_id', currentOrg.id)
           .or(
             `full_name.ilike.%${safe}%,phone.ilike.%${safe}%,email.ilike.%${safe}%,base_location_text.ilike.%${safe}%`
           )
@@ -160,7 +170,7 @@ export default function GlobalSearch() {
     } finally {
       setIsSearching(false)
     }
-  }, [trimmedQuery])
+  }, [currentOrg, trimmedQuery])
 
   useEffect(() => {
     const timer = setTimeout(() => {

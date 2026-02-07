@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 
 type Lead = {
   id: string
@@ -50,11 +51,6 @@ type LeadWithJourneys = Lead & {
   last_email?: EmailLog | null
 }
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://etiaoqskgplpfydblzne.supabase.co'
-const supabaseAnonKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0aWFvcXNrZ3BscGZ5ZGJsem5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMzI0NzAsImV4cCI6MjA4MjgwODQ3MH0.c-AlsveEx_bxVgEivga3PRrBp5ylY3He9EJXbaa2N2c'
-
 function getStatusLight(journey: SMSJourney | EmailJourney | null | undefined): 'green' | 'orange' | 'red' {
   if (!journey) return 'red'
   if (journey.status === 'completed' || journey.status === 'cancelled') return 'red'
@@ -73,6 +69,7 @@ function formatDate(dateStr: string | null | undefined): string {
 }
 
 export default function MarketingLoop() {
+  const { currentOrg } = useAuth()
   const [leads, setLeads] = useState<LeadWithJourneys[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -83,10 +80,17 @@ export default function MarketingLoop() {
       setIsLoading(true)
       setError(null)
 
+      if (!currentOrg) {
+        setLeads([])
+        setIsLoading(false)
+        return
+      }
+
       // Get all leads with Marketing Loop status
       const { data: leadsData, error: leadsError } = await supabase
         .from('extracted_leads')
         .select('id, name, email, phone_number, status')
+        .eq('org_id', currentOrg.id)
         .eq('status', 'Marketing Loop')
         .order('created_at', { ascending: false })
 
@@ -104,18 +108,21 @@ export default function MarketingLoop() {
       const { data: smsJourneys } = await supabase
         .from('marketing_sms_journeys')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .in('lead_id', leadIds)
 
       // Get Email journeys
       const { data: emailJourneys } = await supabase
         .from('marketing_email_journeys')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .in('lead_id', leadIds)
 
       // Get last SMS send per lead
       const { data: smsLogs } = await supabase
         .from('marketing_sms_logs')
         .select('lead_id, step, sent_at')
+        .eq('org_id', currentOrg.id)
         .in('lead_id', leadIds)
         .eq('status', 'sent')
         .order('sent_at', { ascending: false })
@@ -124,6 +131,7 @@ export default function MarketingLoop() {
       const { data: emailLogs } = await supabase
         .from('marketing_email_logs')
         .select('lead_id, step, sent_at')
+        .eq('org_id', currentOrg.id)
         .in('lead_id', leadIds)
         .eq('status', 'sent')
         .order('sent_at', { ascending: false })
@@ -165,20 +173,34 @@ export default function MarketingLoop() {
   }
 
   useEffect(() => {
+    if (!currentOrg) return
+
     fetchLeads()
 
     // Subscribe to changes
     const channel = supabase
       .channel('marketing_loop_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'extracted_leads' }, () => fetchLeads())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'marketing_sms_journeys' }, () => fetchLeads())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'marketing_email_journeys' }, () => fetchLeads())
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id },
+        () => fetchLeads()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'marketing_sms_journeys', filter: 'org_id=eq.' + currentOrg.id },
+        () => fetchLeads()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'marketing_email_journeys', filter: 'org_id=eq.' + currentOrg.id },
+        () => fetchLeads()
+      )
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [])
+  }, [currentOrg])
 
   const handleAction = async (leadId: string, action: string, journeyType: 'sms' | 'email' | 'both' = 'both', step?: number) => {
     setActionLoading((prev) => new Set(prev).add(`${leadId}-${action}`))

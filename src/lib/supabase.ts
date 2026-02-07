@@ -1,11 +1,56 @@
 import { createClient } from '@supabase/supabase-js'
 
-export const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://etiaoqskgplpfydblzne.supabase.co'
-export const supabaseAnonKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0aWFvcXNrZ3BscGZ5ZGJsem5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMzI0NzAsImV4cCI6MjA4MjgwODQ3MH0.c-AlsveEx_bxVgEivga3PRrBp5ylY3He9EJXbaa2N2c'
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error(
+    'Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY environment variables'
+  )
+}
+
+export { supabaseUrl, supabaseAnonKey }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+
+const GET_SESSION_TIMEOUT_MS = 3000
+
+const readStoredSession = () => {
+  if (typeof window === 'undefined') return null
+  try {
+    const key = Object.keys(window.localStorage).find((k) => k.includes('auth-token'))
+    if (!key) return null
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (parsed?.access_token && parsed?.refresh_token) {
+      return parsed
+    }
+  } catch (err) {
+    console.warn('[supabase] Failed to read stored session:', err)
+  }
+  return null
+}
+
+const originalGetSession = supabase.auth.getSession.bind(supabase.auth)
+supabase.auth.getSession = async () => {
+  try {
+    const result = await Promise.race([
+      originalGetSession(),
+      new Promise<null>((_, reject) =>
+        setTimeout(() => reject(new Error('getSession timed out')), GET_SESSION_TIMEOUT_MS)
+      ),
+    ])
+    if (result && typeof result === 'object' && 'data' in result) {
+      return result as Awaited<ReturnType<typeof originalGetSession>>
+    }
+  } catch (err) {
+    console.warn('[supabase] getSession fallback:', err)
+  }
+
+  const storedSession = readStoredSession()
+  return { data: { session: storedSession }, error: null } as Awaited<ReturnType<typeof originalGetSession>>
+}
 
 export type DialpadCall = {
   id: string
@@ -42,4 +87,3 @@ export type DialpadEmail = {
   body?: string | null
   summary?: string | null
 }
-

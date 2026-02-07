@@ -7,7 +7,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { format, startOfDay, addDays, isFriday, startOfWeek, endOfWeek, subDays, isAfter, isBefore } from 'date-fns'
-import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
 import { playSaveSound } from '../lib/sounds'
 import { GlassCard, Button, Badge, useToast, ProgressRing, StreakBadge, Encouragement } from './ui'
 import SmsLead from './SmsLead'
@@ -43,10 +44,6 @@ const TODO_CONFIG: Record<TodoType, { color: string; bgMuted: string; icon: stri
   manual: { color: '#22d3ee', bgMuted: 'rgba(34, 211, 238, 0.1)', icon: '✏️', label: 'Manual' },
 }
 
-const dialpadUserId = '6452247499866112'
-const dialpadUrl = `https://dialpad.com/api/v2/users/${dialpadUserId}/initiate_call`
-const dialpadToken = 'NNRYnLXqJgkWXePcCG2SGCVzHfuB6kxAqQATPvnmn3x6k5RevHUCPdF8zF8jqXsssuyG67bEALxZH9TACsq4aARA46VL4yZ246Kf'
-
 const ENCOURAGEMENTS = [
   "You cleared today's schedule — nice.",
   "Great work! You're on a roll.",
@@ -56,6 +53,7 @@ const ENCOURAGEMENTS = [
 ]
 
 export default function TodoPage() {
+  const { currentOrg } = useAuth()
   const { addToast } = useToast()
   const [manualTodos, setManualTodos] = useState<Todo[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -95,25 +93,25 @@ export default function TodoPage() {
       const now = new Date()
 
       // Leads without status
-      const { data: leads } = await supabase.from('extracted_leads').select('id, name, phone_number, status, created_at, last_text_date, last_text_body').order('created_at', { ascending: false }).limit(1000)
+      const { data: leads } = await supabase.from('extracted_leads').select('id, name, phone_number, status, created_at, last_text_date, last_text_body').eq('org_id', currentOrg!.id).order('created_at', { ascending: false }).limit(1000)
       const leadsNoStatus = (leads || []).filter((l: any) => !l.status || l.status === '')
       setLeadsWithoutStatus(leadsNoStatus)
       // Unassigned jobs
-      const { data: unassignedData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, series:booking_series(title, lead:extracted_leads(name), quote_id)`).gte('start_at', today.toISOString()).lt('start_at', fiveDaysFromNow.toISOString()).is('cleaner_id', null).neq('status', 'cancelled').order('start_at', { ascending: true })
+      const { data: unassignedData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, series:booking_series(title, lead:extracted_leads(name), quote_id)`).eq('org_id', currentOrg!.id).gte('start_at', today.toISOString()).lt('start_at', fiveDaysFromNow.toISOString()).is('cleaner_id', null).neq('status', 'cancelled').order('start_at', { ascending: true })
       setUnassignedJobs((unassignedData || []) as any)
 
       // Overdue unmarked
-      const { data: overdueData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, series:booking_series(title, lead:extracted_leads(name), quote_id)`).lt('start_at', now.toISOString()).neq('status', 'completed').neq('status', 'cancelled').order('start_at', { ascending: false }).limit(1000)
+      const { data: overdueData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, series:booking_series(title, lead:extracted_leads(name), quote_id)`).eq('org_id', currentOrg!.id).lt('start_at', now.toISOString()).neq('status', 'completed').neq('status', 'cancelled').order('start_at', { ascending: false }).limit(1000)
       setOverdueUnmarkedJobs((overdueData || []) as any)
 
       // Past due unpaid
-      const { data: pastDueData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, payment_status, payment_paid_at, series:booking_series(title, lead:extracted_leads(name), quote_id)`).lt('start_at', twoDaysAgo.toISOString()).in('status', ['completed', 'scheduled']).order('start_at', { ascending: false }).limit(100)
+      const { data: pastDueData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, payment_status, payment_paid_at, series:booking_series(title, lead:extracted_leads(name), quote_id)`).eq('org_id', currentOrg!.id).lt('start_at', twoDaysAgo.toISOString()).in('status', ['completed', 'scheduled']).order('start_at', { ascending: false }).limit(100)
       const occurrenceIds = (pastDueData || []).map((o: any) => o.id)
       if (occurrenceIds.length > 0) {
         const quoteIds = (pastDueData || []).map((o: any) => o.quote_id || o.series?.quote_id).filter(Boolean)
         let paidQuoteIds = new Set<string>()
         if (quoteIds.length > 0) {
-          const { data: paidQuotes } = await supabase.from('quotes').select('id, accepted_payment_method').in('id', quoteIds)
+          const { data: paidQuotes } = await supabase.from('quotes').select('id, accepted_payment_method').eq('org_id', currentOrg!.id).in('id', quoteIds)
           paidQuoteIds = new Set((paidQuotes || []).filter((q: any) => q.accepted_payment_method === 'card_paid' || q.accepted_payment_method === 'direct_transfer').map((q: any) => q.id))
         }
         const unpaidPastDue = (pastDueData || []).filter((o: any) => {
@@ -125,7 +123,7 @@ export default function TodoPage() {
       } else { setPastDueUnpaidJobs([]) }
 
       // Cleaner payouts
-      const { data: payoutsData } = await supabase.from('cleaner_payouts').select(`id, occurrence_id, cleaner_id, paid_at, payout_amount, cleaner:cleaners(full_name), occurrence:booking_occurrences(start_at, series:booking_series(title))`).is('paid_at', null).order('created_at', { ascending: false }).limit(200)
+      const { data: payoutsData } = await supabase.from('cleaner_payouts').select(`id, occurrence_id, cleaner_id, paid_at, payout_amount, cleaner:cleaners(full_name), occurrence:booking_occurrences(start_at, series:booking_series(title))`).eq('org_id', currentOrg!.id).is('paid_at', null).order('created_at', { ascending: false }).limit(200)
       const weekPayouts = (payoutsData || []).filter((p: any) => {
         const jobDate = p.occurrence?.start_at ? new Date(p.occurrence.start_at) : null
         if (!jobDate) return false
@@ -134,7 +132,7 @@ export default function TodoPage() {
       setUnpaidCleanerPayouts(weekPayouts as any)
 
       // Manual todos
-      const { data: todosData, error: todosErr } = await supabase.from('todos').select('*').eq('type', 'manual').order('created_at', { ascending: false })
+      const { data: todosData, error: todosErr } = await supabase.from('todos').select('*').eq('org_id', currentOrg!.id).eq('type', 'manual').order('created_at', { ascending: false })
       if (todosErr?.code === 'PGRST205') { setTodosTableUnavailable(true); setManualTodos([]) } 
       else { setTodosTableUnavailable(false); setManualTodos((todosData || []) as Todo[]) }
     } catch (err: any) {
@@ -154,7 +152,7 @@ export default function TodoPage() {
     if (!newTodoTitle.trim()) { addToast({ type: 'warning', title: 'Enter a title' }); return }
     setIsAddingTodo(true)
     try {
-      const { data, error: insertErr } = await supabase.from('todos').insert({ type: 'manual', title: newTodoTitle.trim(), description: newTodoDescription.trim() || null, is_completed: false, auto_generated: false, roll_over: true, due_date: format(today, 'yyyy-MM-dd') }).select().single()
+      const { data, error: insertErr } = await supabase.from('todos').insert({ org_id: currentOrg!.id, type: 'manual', title: newTodoTitle.trim(), description: newTodoDescription.trim() || null, is_completed: false, auto_generated: false, roll_over: true, due_date: format(today, 'yyyy-MM-dd') }).select().single()
       if (insertErr?.code === 'PGRST205') { addToast({ type: 'warning', title: 'Syncing...', message: 'Manual todos are temporarily unavailable' }); return }
       if (insertErr) throw insertErr
       setManualTodos(prev => [data as Todo, ...prev])
@@ -168,7 +166,7 @@ export default function TodoPage() {
   const handleToggleManualTodo = async (todo: Todo) => {
     try {
       const newCompleted = !todo.is_completed
-      await supabase.from('todos').update({ is_completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null }).eq('id', todo.id)
+      await supabase.from('todos').update({ is_completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null }).eq('id', todo.id).eq('org_id', currentOrg!.id)
       setManualTodos(prev => prev.map(t => t.id === todo.id ? { ...t, is_completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null } : t))
       playSaveSound()
       if (newCompleted && getTotalPendingCount() <= 1) {
@@ -181,7 +179,7 @@ export default function TodoPage() {
   const handleDeleteManualTodo = async (todoId: string) => {
     if (!confirm('Delete this todo?')) return
     try {
-      await supabase.from('todos').delete().eq('id', todoId)
+      await supabase.from('todos').delete().eq('id', todoId).eq('org_id', currentOrg!.id)
       setManualTodos(prev => prev.filter(t => t.id !== todoId))
       playSaveSound()
     } catch (err: any) { addToast({ type: 'error', title: 'Failed to delete', message: err?.message }) }
@@ -191,7 +189,7 @@ export default function TodoPage() {
 
   const handleMarkLeadStatus = async (leadId: string, status: string) => {
     try {
-      await supabase.from('extracted_leads').update({ status }).eq('id', leadId)
+      await supabase.from('extracted_leads').update({ status }).eq('id', leadId).eq('org_id', currentOrg!.id)
       setLeadsWithoutStatus(prev => prev.filter(l => l.id !== leadId))
       addToast({ type: 'success', title: '✅ Status updated!' })
       playSaveSound()
@@ -203,7 +201,15 @@ export default function TodoPage() {
     if (!phoneNumber) { addToast({ type: 'warning', title: 'No phone number' }); return }
     setCallingLeadId(leadId)
     try {
-      const response = await fetch(dialpadUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', accept: 'application/json', authorization: `Bearer ${dialpadToken}` }, body: JSON.stringify({ phone_number: phoneNumber }) })
+      const response = await fetch(`${supabaseUrl}/functions/v1/call-lead`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+        },
+        body: JSON.stringify({ phone_number: phoneNumber }),
+      })
       const result = await response.json().catch(() => ({}))
       if (!response.ok || result?.error) throw new Error(result?.error || 'Failed')
       setLastCallsByLead((prev) => ({ ...prev, [leadId]: new Date().toISOString() }))
@@ -214,7 +220,7 @@ export default function TodoPage() {
 
   const handleMarkPayoutPaid = async (payoutId: string) => {
     try {
-      await supabase.from('cleaner_payouts').update({ paid_at: new Date().toISOString(), paid_by: 'admin' }).eq('id', payoutId)
+      await supabase.from('cleaner_payouts').update({ paid_at: new Date().toISOString(), paid_by: 'admin' }).eq('id', payoutId).eq('org_id', currentOrg!.id)
       setUnpaidCleanerPayouts(prev => prev.filter(p => p.id !== payoutId))
       addToast({ type: 'success', title: '💸 Payout marked!' })
       playSaveSound()
@@ -223,9 +229,9 @@ export default function TodoPage() {
 
   const handleMarkJobComplete = async (occurrenceId: string) => {
     try {
-      await supabase.from('booking_occurrences').update({ status: 'completed' }).eq('id', occurrenceId)
-      const { data: occ } = await supabase.from('booking_occurrences').select('series:booking_series(lead_id)').eq('id', occurrenceId).single()
-      if ((occ as any)?.series?.lead_id) await supabase.from('extracted_leads').update({ status: 'Jobs Completed' }).eq('id', (occ as any).series.lead_id)
+      await supabase.from('booking_occurrences').update({ status: 'completed' }).eq('id', occurrenceId).eq('org_id', currentOrg!.id)
+      const { data: occ } = await supabase.from('booking_occurrences').select('series:booking_series(lead_id)').eq('id', occurrenceId).eq('org_id', currentOrg!.id).single()
+      if ((occ as any)?.series?.lead_id) await supabase.from('extracted_leads').update({ status: 'Jobs Completed' }).eq('id', (occ as any).series.lead_id).eq('org_id', currentOrg!.id)
       setOverdueUnmarkedJobs(prev => prev.filter(j => j.id !== occurrenceId))
       addToast({ type: 'success', title: '✅ Job completed!' })
       playSaveSound()
@@ -261,6 +267,8 @@ export default function TodoPage() {
     { type: 'past_due_unpaid' as TodoType, items: pastDueUnpaidJobs.filter(j => !dismissedItems[`pastdue-${j.id}`]), complete: pastDueUnpaidJobs.filter(j => !dismissedItems[`pastdue-${j.id}`]).length === 0 },
     { type: 'cleaner_payout' as TodoType, items: unpaidCleanerPayouts.filter(p => !dismissedItems[`payout-${p.id}`]), complete: unpaidCleanerPayouts.filter(p => !dismissedItems[`payout-${p.id}`]).length === 0, showOnFriday: true },
   ]
+
+  if (!currentOrg) return null
 
   return (
     <div className="min-h-screen p-6">
@@ -376,7 +384,7 @@ export default function TodoPage() {
                                 <p className="text-xs text-[var(--color-text-muted)]">{lead.phone_number || 'No phone'}</p>
                               </div>
                               <div className="flex items-center gap-2">
-                                <SmsLead leadId={lead.id} leadName={lead.name} phoneNumber={lead.phone_number} dialpadToken={dialpadToken} dialpadUserId={dialpadUserId} onSent={({ sentAt, message }) => setLeadsWithoutStatus((prev) => prev.map((l) => l.id === lead.id ? { ...l, last_text_date: sentAt, last_text_body: message } : l))} />
+                                <SmsLead leadId={lead.id} leadName={lead.name} phoneNumber={lead.phone_number} onSent={({ sentAt, message }) => setLeadsWithoutStatus((prev) => prev.map((l) => l.id === lead.id ? { ...l, last_text_date: sentAt, last_text_body: message } : l))} />
                                 <Button size="sm" variant="primary" onClick={() => handleCallLead(lead.id, lead.phone_number)} loading={callingLeadId === lead.id}>Call</Button>
                                 <select onChange={(e) => handleMarkLeadStatus(lead.id, e.target.value)} className="input px-2 py-1 text-xs" defaultValue="">
                                   <option value="" disabled>Status</option>

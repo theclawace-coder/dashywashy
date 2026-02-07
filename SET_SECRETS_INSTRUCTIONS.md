@@ -5,7 +5,7 @@
 ### For Outlook Email Sync:
 
 1. **Go to Edge Function Settings:**
-   - Direct link: https://supabase.com/dashboard/project/etiaoqskgplpfydblzne/functions/outlook-email-sync/settings
+   - Direct link: https://supabase.com/dashboard/project/jditayvwnlxktotfybvk/functions/outlook-email-sync/settings
    - Or navigate: Dashboard → Edge Functions → outlook-email-sync → Settings → Secrets
 
 2. **Add these 4 secrets (use your own values):**
@@ -23,7 +23,7 @@
 ### For Transcript & AI Summary (get-transcript-summary):
 
 1. **Go to Supabase Project Settings:**
-   - Direct link: https://supabase.com/dashboard/project/etiaoqskgplpfydblzne/settings/functions
+   - Direct link: https://supabase.com/dashboard/project/jditayvwnlxktotfybvk/settings/functions
    - Or navigate: Dashboard → Settings → Edge Functions → Secrets
 
 2. **Add these 2 secrets (project-wide, so all functions can use them):**
@@ -76,7 +76,7 @@ If you prefer to use the API:
 
 3. **Link project:**
    ```powershell
-   npx supabase link --project-ref etiaoqskgplpfydblzne
+   npx supabase link --project-ref jditayvwnlxktotfybvk
    ```
 
 4. **Set secrets (replace placeholders with your values):**

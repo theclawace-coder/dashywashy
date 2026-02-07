@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import mapboxgl from 'mapbox-gl'
-import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
 import { fetchMapboxToken } from '../lib/mapbox'
 import { GlassCard, Button, Badge } from './ui'
 
@@ -49,12 +50,7 @@ type CleanerReviewStat = {
   count: number
 }
 
-// NOTE: This uses Dialpad directly from the browser (same approach as other parts of this app).
-// If CORS blocks it, we can switch to an Edge Function proxy.
-const DIALPAD_SMS_ENDPOINT = 'https://dialpad.com/api/v2/sms'
-const dialpadUserId = '6452247499866112'
-const dialpadToken =
-  'NNRYnLXqJgkWXePcCG2SGCVzHfuB6kxAqQATPvnmn3x6k5RevHUCPdF8zF8jqXsssuyG67bEALxZH9TACsq4aARA46VL4yZ246Kf'
+// SMS is sent via Supabase Edge Function to avoid exposing API keys.
 
 function toYmd(d: Date) {
   const yyyy = d.getFullYear()
@@ -144,6 +140,7 @@ function normalizeAddonList(addons: unknown, customAddons: unknown) {
 }
 
 export default function Dispatch() {
+  const { currentOrg } = useAuth()
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<mapboxgl.Map | null>(null)
   const markersRef = useRef<mapboxgl.Marker[]>([])
@@ -561,6 +558,7 @@ export default function Dispatch() {
   }
 
   const loadData = async () => {
+    if (!currentOrg) return
     setError(null)
     setInfo(null)
     try {
@@ -582,6 +580,7 @@ export default function Dispatch() {
         supabase
           .from('cleaners')
           .select('id, full_name, phone, base_location_text, base_lat, base_lng, active')
+          .eq('org_id', currentOrg.id)
           .order('full_name'),
         supabase
           .from('booking_occurrences')
@@ -589,6 +588,7 @@ export default function Dispatch() {
             `id, series_id, quote_id, start_at, end_at, status, cleaner_id, notes,
              series:booking_series(id, title, lead_id, quote_id, service_address, service_lat, service_lng, notes, lead:extracted_leads(id, name))`
           )
+          .eq('org_id', currentOrg.id)
           .gte('start_at', rangeStart.toISOString())
           .lt('start_at', rangeEnd.toISOString())
           .neq('status', 'cancelled')
@@ -596,6 +596,7 @@ export default function Dispatch() {
         supabase
           .from('cleaner_job_reviews')
           .select('cleaner_id, avg_rating:avg(rating), review_count:count(id)')
+          .eq('org_id', currentOrg.id)
           // Aggregates automatically group by non-aggregate columns in PostgREST
           .order('cleaner_id'),
       ])
@@ -636,6 +637,7 @@ export default function Dispatch() {
         const { data: quotes, error: qErr } = await supabase
           .from('quotes')
           .select('id, lead_id, address, address_lat, address_lng, total_inc_gst')
+          .eq('org_id', currentOrg.id)
           .in('id', quoteIds)
         if (!qErr && quotes) {
           for (const q of quotes as any[]) {
@@ -663,6 +665,7 @@ export default function Dispatch() {
         const { data: quotes, error: qErr } = await supabase
           .from('quotes')
           .select('lead_id, address, address_lat, address_lng, created_at, total_inc_gst')
+          .eq('org_id', currentOrg.id)
           .in('lead_id', fallbackLeadIds)
           .order('created_at', { ascending: false })
         if (!qErr && quotes) {
@@ -942,40 +945,26 @@ export default function Dispatch() {
       throw new Error('Cleaner has no phone number.')
     }
     const message = await buildAssignmentSms(job, cleaner)
-    const payload = {
-      infer_country_code: false,
-      to_numbers: [cleaner.phone],
-      user_id: dialpadUserId,
-      text: message,
-    }
-    const response = await fetch(DIALPAD_SMS_ENDPOINT, {
+    const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        accept: 'application/json',
-        authorization: `Bearer ${dialpadToken}`,
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${supabaseAnonKey}`,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        phone_number: cleaner.phone,
+        message,
+      }),
     })
-    const textBody = await response.text()
-    let parsed: any = null
-    try {
-      parsed = textBody ? JSON.parse(textBody) : null
-    } catch {
-      parsed = null
-    }
-    if (!response.ok || parsed?.error) {
-      const details =
-        typeof parsed?.error === 'string'
-          ? parsed.error
-          : parsed?.error
-          ? JSON.stringify(parsed.error)
-          : textBody || `Failed to send SMS (status ${response.status})`
-      throw new Error(details)
+    const data = await response.json()
+    if (!response.ok || !data?.success) {
+      throw new Error(data?.error || `Failed to send SMS (status ${response.status})`)
     }
   }
 
   const assignCleaner = async (occurrenceId: string, cleanerId: string | null) => {
+    if (!currentOrg) return
     setError(null)
     setInfo(null)
     try {
@@ -985,6 +974,7 @@ export default function Dispatch() {
         .from('booking_occurrences')
         .update({ cleaner_id: cleanerId, assigned_at: cleanerId ? new Date().toISOString() : null })
         .eq('id', occurrenceId)
+        .eq('org_id', currentOrg.id)
       if (err) throw err
       let smsError: string | null = null
       if (cleanerId && cleaner) {
@@ -1034,36 +1024,21 @@ export default function Dispatch() {
     setSmsSending(true)
     try {
       for (const c of recipients) {
-        const payload = {
-          infer_country_code: false,
-          to_numbers: [c.phone],
-          user_id: dialpadUserId,
-          text: bulkMessage.trim(),
-        }
-        const response = await fetch(DIALPAD_SMS_ENDPOINT, {
+        const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            accept: 'application/json',
-            authorization: `Bearer ${dialpadToken}`,
+            apikey: supabaseAnonKey,
+            Authorization: `Bearer ${supabaseAnonKey}`,
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            phone_number: c.phone,
+            message: bulkMessage.trim(),
+          }),
         })
-        const textBody = await response.text()
-        let parsed: any = null
-        try {
-          parsed = textBody ? JSON.parse(textBody) : null
-        } catch {
-          parsed = null
-        }
-        if (!response.ok || parsed?.error) {
-          const details =
-            typeof parsed?.error === 'string'
-              ? parsed.error
-              : parsed?.error
-              ? JSON.stringify(parsed.error)
-              : textBody || `Failed to send SMS (status ${response.status})`
-          throw new Error(`Dialpad error for ${c.full_name}: ${details}`)
+        const data = await response.json()
+        if (!response.ok || !data?.success) {
+          throw new Error(`SMS error for ${c.full_name}: ${data?.error || response.status}`)
         }
       }
       setInfo(`Sent SMS to ${recipients.length} cleaner(s).`)
@@ -1093,7 +1068,7 @@ export default function Dispatch() {
   }
 
   useEffect(() => {
-    if (!cleanerModalId) return
+    if (!cleanerModalId || !currentOrg) return
     ;(async () => {
       setCleanerModalLoading(true)
       setCleanerModalError(null)
@@ -1104,6 +1079,7 @@ export default function Dispatch() {
         const { data: reviews, error: reviewsErr } = await supabase
           .from('cleaner_job_reviews')
           .select('rating, notes, created_at')
+          .eq('org_id', currentOrg.id)
           .eq('cleaner_id', cleanerModalId)
           .order('created_at', { ascending: false })
           .limit(50)
@@ -1117,6 +1093,7 @@ export default function Dispatch() {
         const { data: occs, error: occErr } = await supabase
           .from('booking_occurrences')
           .select('id, start_at, series:booking_series(title, lead:extracted_leads(name))')
+          .eq('org_id', currentOrg.id)
           .eq('cleaner_id', cleanerModalId)
           .eq('status', 'completed')
           .order('start_at', { ascending: false })
@@ -1137,6 +1114,7 @@ export default function Dispatch() {
             `id, occurrence_id, payout_amount, job_total, paid_at, paid_by, notes, created_at,
              occurrence:booking_occurrences(start_at, series:booking_series(title, lead:extracted_leads(name)))`
           )
+          .eq('org_id', currentOrg.id)
           .eq('cleaner_id', cleanerModalId)
           .order('created_at', { ascending: false })
           .limit(30)
@@ -1170,7 +1148,7 @@ export default function Dispatch() {
         setCleanerModalLoading(false)
       }
     })()
-  }, [cleanerModalId, cleaners])
+  }, [cleanerModalId, cleaners, currentOrg])
 
   // Refresh board when another part of the app updates a job (e.g., from JobModal).
   useEffect(() => {
@@ -1181,6 +1159,8 @@ export default function Dispatch() {
     return () => window.removeEventListener('job-updated', handler as any)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  if (!currentOrg) return null
 
   return (
     <div className="min-h-screen p-4 md:p-6 lg:p-8">
@@ -1779,7 +1759,7 @@ export default function Dispatch() {
           </div>
 
           {/* Map */}
-          <GlassCard className="lg:col-span-3 overflow-hidden">
+          <GlassCard className="lg:col-span-3 overflow-hidden" data-tour="dispatch-map">
             <div className="p-4 border-b border-white/10">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center">
@@ -2182,6 +2162,5 @@ export default function Dispatch() {
     </div>
   )
 }
-
 
 

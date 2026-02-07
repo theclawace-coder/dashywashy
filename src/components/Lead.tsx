@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { supabase, type DialpadEmail } from '../lib/supabase'
+import { supabase, supabaseAnonKey, supabaseUrl, type DialpadEmail } from '../lib/supabase'
 import { startOfDay, endOfDay, addDays, isSameDay } from 'date-fns'
 import QuoteTool from './QuoteTool'
+import { useAuth } from '../lib/auth'
 
 interface ExtractedLead {
   id?: string
@@ -63,6 +64,42 @@ interface LeadModalProps {
   email: LeadEmail
   onClose: () => void
   onExtracted?: () => void
+}
+
+const stripHtml = (value: string) => value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+
+const extractNameFromSubject = (subject?: string | null) => {
+  if (!subject) return null
+  const normalized = subject
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;|&#39;/g, "'")
+    .trim()
+  const match = normalized.match(/^New message from\s+["']([^"']+)["']$/i)
+  return match?.[1]?.trim() || null
+}
+
+const extractEmailFromText = (text?: string | null) => {
+  if (!text) return null
+  const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+  return match?.[0]?.trim() || null
+}
+
+const extractPhoneFromText = (text?: string | null) => {
+  if (!text) return null
+  const match = text.match(/(\+?\d[\d\s().-]{7,}\d)/)
+  return match?.[1]?.trim() || null
+}
+
+const buildFallbackLead = (email: LeadEmail) => {
+  const bodyText = email.body ? stripHtml(email.body) : ''
+  const name = extractNameFromSubject(email.subject)
+  const emailFromBody = extractEmailFromText(bodyText)
+  const phoneFromBody = extractPhoneFromText(bodyText)
+  return {
+    name,
+    email: email.from_email?.trim() || emailFromBody,
+    phone_number: phoneFromBody,
+  }
 }
 
 function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
@@ -207,16 +244,18 @@ function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
   const handleExtractLead = async () => {
     setIsExtracting(true)
     setExtractionError(null)
+    const fallback = buildFallbackLead(email)
 
     try {
-      const response = await fetch(
-        'https://etiaoqskgplpfydblzne.supabase.co/functions/v1/extract-lead-info',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email_id: email.id }),
-        }
-      )
+      const response = await fetch(`${supabaseUrl}/functions/v1/extract-lead-info`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+        },
+        body: JSON.stringify({ email_id: email.id }),
+      })
 
       const data = await response.json()
 
@@ -233,7 +272,7 @@ function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
             console.warn('Lead extracted but fetching saved record failed, falling back to payload', persistedError)
           }
 
-          setExtractedLead(
+          const baseLead =
             persisted || {
               email_id: email.id,
               name: data.name,
@@ -242,21 +281,53 @@ function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
               region_notes: data.region_notes,
               extracted_at: data.extracted_at,
             }
-          )
+          const mergedLead = {
+            ...baseLead,
+            name: baseLead.name || fallback.name,
+            phone_number: baseLead.phone_number || fallback.phone_number,
+            email: baseLead.email || fallback.email,
+          }
+
+          const updatePayload: Partial<ExtractedLead> = {}
+          if (!baseLead.name && mergedLead.name) updatePayload.name = mergedLead.name
+          if (!baseLead.phone_number && mergedLead.phone_number) updatePayload.phone_number = mergedLead.phone_number
+          if (!baseLead.email && mergedLead.email) updatePayload.email = mergedLead.email
+
+          if (Object.keys(updatePayload).length > 0) {
+            const updateQuery = supabase.from('extracted_leads').update(updatePayload)
+            if (persisted?.id) {
+              await updateQuery.eq('id', persisted.id)
+            } else {
+              await updateQuery.eq('email_id', email.id)
+            }
+          }
+
+          setExtractedLead(mergedLead)
         } catch (fetchErr) {
           console.warn('Lead extracted but persisted row lookup failed', fetchErr)
-          setExtractedLead({
+          const baseLead = {
             email_id: email.id,
             name: data.name,
             phone_number: data.phone_number,
             email: data.email,
             region_notes: data.region_notes,
             extracted_at: data.extracted_at,
+          }
+          setExtractedLead({
+            ...baseLead,
+            name: baseLead.name || fallback.name,
+            phone_number: baseLead.phone_number || fallback.phone_number,
+            email: baseLead.email || fallback.email,
           })
         }
         // Notify parent to refresh leads list
         if (onExtracted) {
           onExtracted()
+        }
+        const hasPrimary = Boolean(data.name || data.phone_number || data.email)
+        const hasFallback = Boolean(fallback.name || fallback.phone_number || fallback.email)
+        if (!hasPrimary && !hasFallback) {
+          setExtractionError('No lead details were found in this email. Try again later or add manually.')
         }
       } else {
         setExtractionError(data.error || 'Failed to extract lead information')
@@ -270,6 +341,9 @@ function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
   }
 
   const isPaid = extractedLead?.status?.toLowerCase() === 'paid'
+  const canRetryExtract =
+    !extractedLead || (!extractedLead.name && !extractedLead.phone_number && !extractedLead.email)
+  const extractLabel = extractedLead ? 'Re-extract Lead Info' : 'Extract Lead Info'
 
   return (
     <div 
@@ -323,7 +397,7 @@ function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
                 Paid
               </span>
             )}
-              {!extractedLead && (
+              {canRetryExtract && (
                 <button
                   onClick={handleExtractLead}
                   disabled={isExtracting}
@@ -342,7 +416,7 @@ function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
                       </svg>
-                      Extract Lead Info
+                      {extractLabel}
                     </>
                   )}
                 </button>
@@ -549,6 +623,7 @@ function isLeadEmail(subject: string | null): boolean {
 }
 
 export default function Lead() {
+  const { currentOrg } = useAuth()
   const [leads, setLeads] = useState<LeadEmail[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedLead, setSelectedLead] = useState<LeadEmail | null>(null)
@@ -561,6 +636,7 @@ export default function Lead() {
   const recentlyProcessedLeadsRef = useRef<Set<string>>(new Set())
 
   const fetchLeads = useCallback(async () => {
+    if (!currentOrg) return
     try {
       setIsLoading(true)
       setError(null)
@@ -571,6 +647,7 @@ export default function Lead() {
       const { data: emails, error: emailsError } = await supabase
         .from('dialpad_emails')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .order('created_at', { ascending: false })
         .limit(selectedDate ? 200 : 100)
 
@@ -620,6 +697,7 @@ export default function Lead() {
           const { data: extractedLeads, error: extractedLeadsError } = await supabase
             .from('extracted_leads')
             .select('*')
+            .eq('org_id', currentOrg.id)
             .in('email_id', leadIds)
 
           if (extractedLeadsError) {
@@ -666,9 +744,11 @@ export default function Lead() {
     } finally {
       setIsLoading(false)
     }
-  }, [selectedDate])
+  }, [currentOrg, selectedDate])
 
   useEffect(() => {
+    if (!currentOrg) return
+
     fetchLeads()
 
     // Debounce function to prevent rapid successive refreshes
@@ -687,7 +767,10 @@ export default function Lead() {
     // Subscribe to realtime updates for emails - only listen to INSERT events
     const emailsChannel = supabase
       .channel('leads_email_changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'dialpad_emails' }, (payload) => {
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'dialpad_emails', filter: 'org_id=eq.' + currentOrg.id },
+        (payload) => {
         const email = payload.new as any
         const emailId = email?.id
         
@@ -710,7 +793,10 @@ export default function Lead() {
     // Subscribe to realtime updates for extracted leads - only listen to INSERT events
     const extractedLeadsChannel = supabase
       .channel('extracted_leads_changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'extracted_leads' }, (payload) => {
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id },
+        (payload) => {
         const lead = payload.new as any
         const leadId = lead?.id
         
@@ -737,7 +823,7 @@ export default function Lead() {
       supabase.removeChannel(emailsChannel)
       supabase.removeChannel(extractedLeadsChannel)
     }
-  }, [fetchLeads])
+  }, [currentOrg, fetchLeads])
 
   const toggleContactExpand = (leadId: string) => {
     setExpandedContacts(prev => {
@@ -770,7 +856,7 @@ export default function Lead() {
   }
 
   return (
-    <div className="mt-8 glass-card rounded-2xl overflow-hidden">
+    <div className="mt-8 glass-card rounded-2xl overflow-hidden" data-tour="lead-table">
       {/* Header */}
       <div className="p-4 border-b border-white/10">
         <div className="flex flex-col gap-3">
@@ -1023,4 +1109,3 @@ export default function Lead() {
     </div>
   )
 }
-

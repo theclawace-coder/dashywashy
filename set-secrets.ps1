@@ -1,8 +1,8 @@
 # Set Supabase Edge Function Secrets
 # These will be used by the outlook-email-sync function
 
-$supabaseUrl = "https://etiaoqskgplpfydblzne.supabase.co"
-$projectRef = "etiaoqskgplpfydblzne"
+$supabaseUrl = "https://jditayvwnlxktotfybvk.supabase.co"
+$projectRef = "jditayvwnlxktotfybvk"
 
 # You'll need your Supabase access token or service role key
 # Get it from: Supabase Dashboard → Settings → API → service_role key

@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 
 type Lead = {
   id: string
@@ -120,6 +121,7 @@ function countOccurrencesInMonth(startsAt: string, rrule: string | null, monthSt
 }
 
 export default function RepeatCustomers() {
+  const { currentOrg } = useAuth()
   const [repeatCustomers, setRepeatCustomers] = useState<RepeatCustomer[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -132,6 +134,12 @@ export default function RepeatCustomers() {
       setError(null)
       setIsLoading(true)
 
+      if (!currentOrg) {
+        setRepeatCustomers([])
+        setIsLoading(false)
+        return
+      }
+
       // Fetch all booking series with their lead info
       const { data: bookingSeries, error: bookingError } = await supabase
         .from('booking_series')
@@ -139,6 +147,7 @@ export default function RepeatCustomers() {
           *,
           lead:extracted_leads (*)
         `)
+        .eq('org_id', currentOrg.id)
         .order('created_at', { ascending: false })
 
       if (bookingError) throw bookingError
@@ -147,6 +156,7 @@ export default function RepeatCustomers() {
       const { data: quotes, error: quotesError } = await supabase
         .from('quotes')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .order('created_at', { ascending: false })
 
       if (quotesError) throw quotesError
@@ -241,24 +251,33 @@ export default function RepeatCustomers() {
   }
 
   useEffect(() => {
+    if (!currentOrg) return
     fetchRepeatCustomers()
 
     // Subscribe to changes
     const bookingChannel = supabase
       .channel('repeat_customers_bookings')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_series' }, () => fetchRepeatCustomers())
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'booking_series', filter: 'org_id=eq.' + currentOrg.id },
+        () => fetchRepeatCustomers()
+      )
       .subscribe()
 
     const quotesChannel = supabase
       .channel('repeat_customers_quotes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'quotes' }, () => fetchRepeatCustomers())
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'quotes', filter: 'org_id=eq.' + currentOrg.id },
+        () => fetchRepeatCustomers()
+      )
       .subscribe()
 
     return () => {
       supabase.removeChannel(bookingChannel)
       supabase.removeChannel(quotesChannel)
     }
-  }, [])
+  }, [currentOrg])
 
   const filteredCustomers = useMemo(() => {
     let result = repeatCustomers

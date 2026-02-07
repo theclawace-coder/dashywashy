@@ -1,18 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
-
-const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': '*',
-    },
-  })
-}
+import { resolveOrgFromRequest, getAutomationSetting, corsHeaders, jsonResponse, jsonError } from '../_shared/org-resolver.ts'
 
 // Calculate next send time based on step and schedule
 function calculateNextSendTime(step: number, startedAt: Date, isEmail: boolean): Date {
@@ -37,25 +23,21 @@ function calculateNextSendTime(step: number, startedAt: Date, isEmail: boolean):
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      },
-    })
+    return new Response('ok', { headers: corsHeaders })
   }
 
   if (req.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405)
+    return jsonError('Method not allowed', 405)
   }
 
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return jsonResponse({ error: 'Server configuration error' }, 500)
-  }
+  try {
+  const { orgId, supabaseAdmin } = await resolveOrgFromRequest(req)
+  const supabase = supabaseAdmin
 
-  const supabase = createClient(supabaseUrl, supabaseServiceKey)
+  const [smsSetting, emailSetting] = await Promise.all([
+    getAutomationSetting(supabase, orgId, 'marketing_sms'),
+    getAutomationSetting(supabase, orgId, 'marketing_email'),
+  ])
 
   let payload: {
     action?: string
@@ -82,6 +64,7 @@ Deno.serve(async (req) => {
       .from('extracted_leads')
       .select('id, name, email, phone_number, status')
       .eq('id', leadId)
+      .eq('org_id', orgId)
       .maybeSingle()
 
     if (leadError || !lead) {
@@ -95,6 +78,9 @@ Deno.serve(async (req) => {
       const results: any = {}
 
       if (journeyType === 'sms' || journeyType === 'both') {
+        if (!smsSetting.enabled) {
+          results.sms = { skipped: 'disabled' }
+        } else {
         if (!lead.phone_number) {
           results.sms = { error: 'Lead has no phone number' }
         } else {
@@ -141,9 +127,13 @@ Deno.serve(async (req) => {
             results.sms = createError ? { error: createError.message } : { success: true, journey_id: newJourney.id }
           }
         }
+        }
       }
 
       if (journeyType === 'email' || journeyType === 'both') {
+        if (!emailSetting.enabled) {
+          results.email = { skipped: 'disabled' }
+        } else {
         if (!lead.email) {
           results.email = { error: 'Lead has no email' }
         } else {
@@ -189,6 +179,7 @@ Deno.serve(async (req) => {
 
             results.email = createError ? { error: createError.message } : { success: true, journey_id: newJourney.id }
           }
+        }
         }
       }
 
@@ -406,6 +397,11 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Invalid action. Use: start, pause, resume, cancel, stop, set_step, send_now' }, 400)
   } catch (err) {
     console.error('Error in marketing-loop-actions:', err)
-    return jsonResponse({ error: err instanceof Error ? err.message : 'Unexpected error' }, 500)
+    return jsonError(err instanceof Error ? err.message : 'Unexpected error', 500)
+  }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unexpected error'
+    const status = message === 'Unauthorized' ? 401 : 500
+    return jsonError(message, status)
   }
 })

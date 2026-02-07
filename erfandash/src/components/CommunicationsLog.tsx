@@ -496,7 +496,7 @@ export default function CommunicationsLog() {
     setIsFetchingSummary(true)
     try {
       const response = await fetch(
-        'https://etiaoqskgplpfydblzne.supabase.co/functions/v1/get-transcript-summary',
+        'https://jditayvwnlxktotfybvk.supabase.co/functions/v1/get-transcript-summary',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

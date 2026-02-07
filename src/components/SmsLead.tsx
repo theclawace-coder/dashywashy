@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { supabase } from '../lib/supabase'
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
 import { playSaveSound } from '../lib/sounds'
 
 type SmsTemplate = {
@@ -16,13 +16,9 @@ type SmsLeadProps = {
   leadId: string
   leadName?: string | null
   phoneNumber?: string | null
-  dialpadToken: string
-  dialpadUserId: string
   onSent?: (payload: { sentAt: string; message: string }) => void
   prefillBody?: string
 }
-
-const SMS_ENDPOINT = 'https://dialpad.com/api/v2/sms'
 
 const DEFAULT_SMS_TEMPLATES: SmsTemplate[] = [
   {
@@ -66,8 +62,6 @@ export default function SmsLead({
   leadId,
   leadName,
   phoneNumber,
-  dialpadToken,
-  dialpadUserId,
   onSent,
   prefillBody,
 }: SmsLeadProps) {
@@ -216,40 +210,22 @@ export default function SmsLead({
     setSendingError(null)
     setSendSuccess(null)
     try {
-      const payload = {
-        infer_country_code: false,
-        to_numbers: [phoneNumber],
-        user_id: dialpadUserId,
-        text: resolvedBody.trim(),
-      }
-
-      const response = await fetch(SMS_ENDPOINT, {
+      const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          accept: 'application/json',
-          authorization: `Bearer ${dialpadToken}`,
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          phone_number: phoneNumber,
+          message: resolvedBody.trim(),
+        }),
       })
 
-      const textBody = await response.text()
-      let parsed: any = null
-      try {
-        parsed = textBody ? JSON.parse(textBody) : null
-      } catch (parseErr) {
-        parsed = null
-      }
-
-      if (!response.ok || parsed?.error) {
-        const rawError = parsed?.error
-        const errorDetail =
-          typeof rawError === 'string'
-            ? rawError
-            : rawError
-            ? JSON.stringify(rawError)
-            : textBody || `Failed to send SMS (status ${response.status})`
-        throw new Error(errorDetail)
+      const data = await response.json()
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || `Failed to send SMS (status ${response.status})`)
       }
 
       const sentAtIso = new Date().toISOString()
@@ -274,11 +250,7 @@ export default function SmsLead({
       setSendSuccess('SMS sent successfully')
     } catch (err: any) {
       console.error('Error sending SMS', err)
-      if (err?.message?.includes('Failed to fetch')) {
-        setSendingError('Failed to reach Dialpad. Browser may be blocking the request (CORS). Try again or use a server-side proxy.')
-      } else {
-        setSendingError(err instanceof Error ? err.message : 'Failed to send SMS')
-      }
+      setSendingError(err instanceof Error ? err.message : 'Failed to send SMS')
     } finally {
       setIsSending(false)
     }
@@ -401,7 +373,7 @@ export default function SmsLead({
             <div className="p-2.5 border-b border-white/10 flex items-center justify-between">
             <div>
               <h4 className="text-sm text-white font-semibold">SMS Templates</h4>
-              <p className="text-[11px] text-[var(--color-text-muted)]">Sends as user {dialpadUserId}</p>
+              <p className="text-[11px] text-[var(--color-text-muted)]">Sent via secure SMS gateway</p>
             </div>
             <button
               onClick={() => setIsOpen(false)}
@@ -497,7 +469,7 @@ export default function SmsLead({
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-[11px] text-[var(--color-text-muted)]">Uses Dialpad user {dialpadUserId}</span>
+                <span className="text-[11px] text-[var(--color-text-muted)]">Sent via secure SMS gateway</span>
                 <button
                   onClick={handleSend}
                   disabled={isSending || !phoneNumber}

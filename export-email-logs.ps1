@@ -1,7 +1,7 @@
 # Export Email Logs Script
 # This script exports emails from the database to a readable log file format
 
-$supabaseUrl = "https://etiaoqskgplpfydblzne.supabase.co"
+$supabaseUrl = "https://jditayvwnlxktotfybvk.supabase.co"
 $supabaseKey = Read-Host "Enter your Supabase anon key (or press Enter to use environment variable)"
 
 if ([string]::IsNullOrWhiteSpace($supabaseKey)) {

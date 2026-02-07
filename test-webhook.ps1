@@ -1,7 +1,7 @@
 # Dialpad Webhook Diagnostic Script
 
 $apiKey = "wG4YnBdLHf7h6x3Vb5MSux6ugrYHEyvZ4PeQextR6aFDrusdzMBwsuRE7XKZ7AFdd3mtZMJ4JxC37gvCUp2N33JnXRBKFYBZANDf"
-$webhookUrl = "https://etiaoqskgplpfydblzne.supabase.co/functions/v1/dialpad-webhook"
+$webhookUrl = "https://jditayvwnlxktotfybvk.supabase.co/functions/v1/dialpad-webhook"
 $headers = @{
     "Authorization" = "Bearer $apiKey"
     "Content-Type" = "application/json"

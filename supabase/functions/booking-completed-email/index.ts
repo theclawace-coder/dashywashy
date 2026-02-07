@@ -1,22 +1,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
+import { getOrgIntegration, getOrg } from '../_shared/org-resolver.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
 const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-const resendApiKey = Deno.env.get('RESEND_API_KEY') || ''
-
-const completionEmailFrom =
-  Deno.env.get('COMPLETION_EMAIL_FROM') ||
-  Deno.env.get('BOOKING_CONFIRMATION_EMAIL_FROM') ||
-  Deno.env.get('JOB_WON_EMAIL_FROM') ||
-  'notifications@sydneypremiumcleaning.com.au'
-const completionEmailReplyTo =
-  Deno.env.get('COMPLETION_EMAIL_REPLY_TO') ||
-  Deno.env.get('BOOKING_CONFIRMATION_REPLY_TO') ||
-  'sales@sydneypremiumcleaning.com.au'
-
-const businessName = Deno.env.get('BUSINESS_NAME') || 'Sydney Premium Cleaning'
-const businessEmail = Deno.env.get('BUSINESS_EMAIL') || 'sales@sydneypremiumcleaning.com.au'
-const businessPhone = Deno.env.get('BUSINESS_PHONE') || '0426413984'
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -54,6 +40,23 @@ function normalizeList(value: unknown): string {
     .join(', ')
 }
 
+function applyBookingPlaceholders(text: string, params: {
+  customerName: string
+  cleanType: string
+  appointmentDate: string
+  appointmentTime: string
+  address: string
+  addonsLabel: string
+}) {
+  return text
+    .replace(/{{\s*name\s*}}/gi, params.customerName)
+    .replace(/{{\s*service\s*}}/gi, params.cleanType)
+    .replace(/{{\s*date\s*}}/gi, params.appointmentDate)
+    .replace(/{{\s*time\s*}}/gi, params.appointmentTime)
+    .replace(/{{\s*address\s*}}/gi, params.address)
+    .replace(/{{\s*addons\s*}}/gi, params.addonsLabel)
+}
+
 async function sendCompletionEmail(params: {
   to: string
   customerName: string
@@ -62,10 +65,12 @@ async function sendCompletionEmail(params: {
   appointmentTime: string
   address: string
   addonsLabel: string
+  subjectOverride?: string
+  bodyOverride?: string
 }) {
-  const { to, customerName, cleanType, appointmentDate, appointmentTime, address, addonsLabel } = params
+  const { to, customerName, cleanType, appointmentDate, appointmentTime, address, addonsLabel, subjectOverride, bodyOverride } = params
 
-  const subject = 'Job completed — thank you!'
+  const subject = subjectOverride?.trim() || 'Job completed — thank you!'
 
   const text = [
     `Hi ${customerName},`,
@@ -84,7 +89,20 @@ async function sendCompletionEmail(params: {
     businessPhone,
   ].join('\n')
 
-  const html = `
+  const resolvedText = bodyOverride
+    ? applyBookingPlaceholders(bodyOverride, {
+        customerName,
+        cleanType,
+        appointmentDate,
+        appointmentTime,
+        address,
+        addonsLabel,
+      })
+    : text
+
+  const html = bodyOverride
+    ? `<div style="font-family:Arial,Helvetica,sans-serif;white-space:pre-line;">${resolvedText.replace(/\n/g, '<br>')}</div>`
+    : `
     <div style="background:#f5f7fb;padding:32px 12px;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
       <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
         <div style="background:#10b981;color:#ffffff;padding:20px 24px;">
@@ -148,7 +166,7 @@ async function sendCompletionEmail(params: {
       from: completionEmailFrom,
       to: [to],
       subject,
-      text,
+      text: resolvedText,
       html,
       ...(completionEmailReplyTo ? { reply_to: completionEmailReplyTo } : {}),
     }),
@@ -209,6 +227,7 @@ Deno.serve(async (req) => {
 
   const occurrenceSelect = `
     id,
+    org_id,
     series_id,
     start_at,
     quote_id,
@@ -229,6 +248,21 @@ Deno.serve(async (req) => {
 
   if (occurrenceError || !occurrence) {
     return jsonResponse({ error: 'Occurrence not found' }, 404)
+  }
+
+  let completionConfig: Record<string, unknown> = {}
+  if (!payload.testOnly && (occurrence as any).org_id) {
+    const { data: setting } = await supabase
+      .from('organization_automation_settings')
+      .select('enabled, config')
+      .eq('org_id', (occurrence as any).org_id)
+      .eq('automation_type', 'booking_completion')
+      .maybeSingle()
+
+    if (setting && setting.enabled === false) {
+      return jsonResponse({ skipped: true, reason: 'automation_disabled' })
+    }
+    completionConfig = (setting?.config as Record<string, unknown>) || {}
   }
 
   if (occurrence.status !== 'completed' && !payload.testOnly) {
@@ -283,6 +317,8 @@ Deno.serve(async (req) => {
     appointmentTime,
     address,
     addonsLabel,
+    subjectOverride: typeof (completionConfig as any).subject === 'string' ? ((completionConfig as any).subject as string) : undefined,
+    bodyOverride: typeof (completionConfig as any).body === 'string' ? ((completionConfig as any).body as string) : undefined,
   })
 
   if (!payload.testOnly) {

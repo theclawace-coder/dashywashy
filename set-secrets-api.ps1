@@ -6,7 +6,7 @@ param(
     [string]$AccessToken
 )
 
-$projectRef = "etiaoqskgplpfydblzne"
+$projectRef = "jditayvwnlxktotfybvk"
 $functionName = "outlook-email-sync"
 
 $secrets = @{

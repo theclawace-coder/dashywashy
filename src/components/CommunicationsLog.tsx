@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { supabase, type DialpadCall, type DialpadSms, type DialpadEmail } from '../lib/supabase'
+import { supabase, supabaseAnonKey, supabaseUrl, type DialpadCall, type DialpadSms, type DialpadEmail } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 import { isSameDay, startOfDay, endOfDay, addDays } from 'date-fns'
 
 type CommunicationType = 'all' | 'calls' | 'sms' | 'emails'
@@ -274,6 +275,7 @@ interface CommunicationsLogProps {
 }
 
 export default function CommunicationsLog({ selectedDate: externalSelectedDate = null }: CommunicationsLogProps) {
+  const { currentOrg } = useAuth()
   const [filter, setFilter] = useState<CommunicationType>('all')
   const [items, setItems] = useState<CommunicationItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -300,21 +302,26 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
 
       console.log('[CommunicationsLog] Fetching communications...')
 
+      if (!currentOrg) return
+
       // Fetch all communications in parallel
       const [callsRes, smsRes, emailsRes] = await Promise.all([
         supabase
           .from('dialpad_calls')
           .select('*')
+          .eq('org_id', currentOrg.id)
           .order('created_at', { ascending: false })
           .limit(selectedDate ? 200 : 100),
         supabase
           .from('dialpad_sms')
           .select('*')
+          .eq('org_id', currentOrg.id)
           .order('created_at', { ascending: false })
           .limit(selectedDate ? 200 : 100),
         supabase
           .from('dialpad_emails')
           .select('*')
+          .eq('org_id', currentOrg.id)
           .order('created_at', { ascending: false })
           .limit(selectedDate ? 200 : 100),
       ])
@@ -482,31 +489,45 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
     } finally {
       setIsLoading(false)
     }
-  }, [selectedDate])
+  }, [currentOrg, selectedDate])
 
   useEffect(() => {
+    if (!currentOrg) return
+
     fetchCommunications()
 
     // Subscribe to realtime updates
     const channels = [
       supabase
         .channel('calls_log_changes')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_calls' }, () => fetchCommunications())
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'dialpad_calls', filter: 'org_id=eq.' + currentOrg.id },
+          () => fetchCommunications()
+        )
         .subscribe(),
       supabase
         .channel('sms_log_changes')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_sms' }, () => fetchCommunications())
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'dialpad_sms', filter: 'org_id=eq.' + currentOrg.id },
+          () => fetchCommunications()
+        )
         .subscribe(),
       supabase
         .channel('emails_log_changes')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_emails' }, () => fetchCommunications())
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'dialpad_emails', filter: 'org_id=eq.' + currentOrg.id },
+          () => fetchCommunications()
+        )
         .subscribe(),
     ]
 
     return () => {
       channels.forEach(channel => supabase.removeChannel(channel))
     }
-  }, [fetchCommunications])
+  }, [currentOrg, fetchCommunications])
 
   const filteredItems = items.filter(item => {
     if (filter === 'all') return true
@@ -521,14 +542,15 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
 
     setIsFetchingSummary(true)
     try {
-      const response = await fetch(
-        'https://etiaoqskgplpfydblzne.supabase.co/functions/v1/get-transcript-summary',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ call_id: selectedItem.call_id }),
-        }
-      )
+      const response = await fetch(`${supabaseUrl}/functions/v1/get-transcript-summary`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+        },
+        body: JSON.stringify({ call_id: selectedItem.call_id }),
+      })
 
       const data = await response.json()
 
@@ -652,7 +674,7 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
   }
 
   return (
-    <div className="mt-8 glass-card rounded-2xl overflow-hidden">
+    <div className="mt-8 glass-card rounded-2xl overflow-hidden" data-tour="communications-log">
       {/* Header - More Compact */}
       <div className="p-4 border-b border-white/10">
         <div className="flex flex-col gap-3">

@@ -57,6 +57,23 @@ function normalizeList(value: unknown): string {
     .join(', ')
 }
 
+function applyBookingPlaceholders(text: string, params: {
+  customerName: string
+  cleanType: string
+  appointmentDate: string
+  appointmentTime: string
+  address: string
+  addonsLabel: string
+}) {
+  return text
+    .replace(/{{\s*name\s*}}/gi, params.customerName)
+    .replace(/{{\s*service\s*}}/gi, params.cleanType)
+    .replace(/{{\s*date\s*}}/gi, params.appointmentDate)
+    .replace(/{{\s*time\s*}}/gi, params.appointmentTime)
+    .replace(/{{\s*address\s*}}/gi, params.address)
+    .replace(/{{\s*addons\s*}}/gi, params.addonsLabel)
+}
+
 async function sendReminderEmail(params: {
   to: string
   customerName: string
@@ -65,12 +82,14 @@ async function sendReminderEmail(params: {
   appointmentTime: string
   address: string
   addonsLabel: string
+  subjectOverride?: string
+  bodyOverride?: string
 }) {
-  const { to, customerName, cleanType, appointmentDate, appointmentTime, address, addonsLabel } = params
+  const { to, customerName, cleanType, appointmentDate, appointmentTime, address, addonsLabel, subjectOverride, bodyOverride } = params
 
-  const subject = 'Hey, your cleaning is in 24 hours'
+  const subject = subjectOverride?.trim() || 'Hey, your cleaning is in 24 hours'
 
-  const text = [
+  const defaultText = [
     `Hi ${customerName},`,
     ``,
     `Hey Your Cleaning is in 24 Hours`,
@@ -92,7 +111,20 @@ async function sendReminderEmail(params: {
     businessPhone,
   ].join('\n')
 
-  const html = `
+  const text = bodyOverride
+    ? applyBookingPlaceholders(bodyOverride, {
+        customerName,
+        cleanType,
+        appointmentDate,
+        appointmentTime,
+        address,
+        addonsLabel,
+      })
+    : defaultText
+
+  const html = bodyOverride
+    ? `<div style="font-family:Arial,Helvetica,sans-serif;white-space:pre-line;">${text.replace(/\n/g, '<br>')}</div>`
+    : `
     <div style="background:#f5f7fb;padding:32px 12px;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
       <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
         <div style="background:#0ea5e9;color:#ffffff;padding:20px 24px;">
@@ -218,7 +250,7 @@ Deno.serve(async (req) => {
     payload = {}
   }
 
-  const leadHours =
+  const defaultLeadHours =
     typeof payload.leadHours === 'number' && Number.isFinite(payload.leadHours)
       ? payload.leadHours
       : reminderLeadHours
@@ -227,14 +259,33 @@ Deno.serve(async (req) => {
       ? payload.windowMinutes
       : reminderWindowMinutes
 
+  let maxLeadHours = defaultLeadHours
+  try {
+    const { data: leadHourRows } = await supabase
+      .from('organization_automation_settings')
+      .select('config')
+      .eq('automation_type', 'booking_reminder')
+
+    const leadHourValues = (leadHourRows || [])
+      .map((row: any) => Number(row?.config?.lead_hours))
+      .filter((val: number) => Number.isFinite(val) && val > 0)
+
+    if (leadHourValues.length > 0) {
+      maxLeadHours = Math.max(defaultLeadHours, ...leadHourValues)
+    }
+  } catch {
+    maxLeadHours = defaultLeadHours
+  }
+
   const now = new Date()
-  const target = new Date(now.getTime() + leadHours * 60 * 60 * 1000)
+  const target = new Date(now.getTime() + maxLeadHours * 60 * 60 * 1000)
   const windowMs = Math.max(windowMinutes, 1) * 60 * 1000
   const windowStart = new Date(target.getTime() - windowMs)
   const windowEnd = new Date(target.getTime() + windowMs)
 
   const occurrenceSelect = `
     id,
+    org_id,
     series_id,
     start_at,
     quote_id,
@@ -327,7 +378,53 @@ Deno.serve(async (req) => {
     return jsonResponse({ success: true, sent_count: 0, skipped: 'already_sent' })
   }
 
-  const leadIds = pendingOccurrences
+  const orgIds = Array.from(new Set(pendingOccurrences.map((occ: any) => occ.org_id).filter(Boolean)))
+  const enabledByOrg = new Map<string, boolean>()
+  const configByOrg = new Map<string, Record<string, unknown>>()
+
+  if (orgIds.length > 0) {
+    const { data: automationRows } = await supabase
+      .from('organization_automation_settings')
+      .select('org_id, enabled, config')
+      .in('org_id', orgIds)
+      .eq('automation_type', 'booking_reminder')
+
+    ;(automationRows || []).forEach((row: any) => {
+      enabledByOrg.set(row.org_id, row.enabled ?? true)
+      configByOrg.set(row.org_id, (row.config as Record<string, unknown>) || {})
+    })
+  }
+
+  const eligibleOccurrences: any[] = []
+  const preSkipped: Array<{ occurrence_id: string; reason: string }> = []
+
+  for (const occ of pendingOccurrences) {
+    const enabled = occ.org_id ? (enabledByOrg.get(occ.org_id) ?? true) : true
+    if (!enabled) {
+      preSkipped.push({ occurrence_id: occ.id, reason: 'automation_disabled' })
+      continue
+    }
+
+    const config = occ.org_id ? configByOrg.get(occ.org_id) || {} : {}
+    const orgLeadHoursRaw = Number((config as any).lead_hours)
+    const orgLeadHours = Number.isFinite(orgLeadHoursRaw) && orgLeadHoursRaw > 0 ? orgLeadHoursRaw : defaultLeadHours
+    const occStart = occ.start_at ? new Date(occ.start_at) : null
+    if (!occStart || Number.isNaN(occStart.getTime())) {
+      preSkipped.push({ occurrence_id: occ.id, reason: 'invalid_start_time' })
+      continue
+    }
+    const orgTarget = new Date(now.getTime() + orgLeadHours * 60 * 60 * 1000)
+    const orgWindowStart = new Date(orgTarget.getTime() - windowMs)
+    const orgWindowEnd = new Date(orgTarget.getTime() + windowMs)
+    if (occStart < orgWindowStart || occStart > orgWindowEnd) {
+      preSkipped.push({ occurrence_id: occ.id, reason: 'outside_window' })
+      continue
+    }
+
+    eligibleOccurrences.push(occ)
+  }
+
+  const leadIds = eligibleOccurrences
     .map((occ: any) => occ.booking_series?.lead_id)
     .filter((id: string | null | undefined): id is string => Boolean(id))
 
@@ -342,9 +439,10 @@ Deno.serve(async (req) => {
   const leadsById = new Map((leads || []).map((lead: any) => [lead.id, lead]))
 
   let sentCount = 0
-  const skipped: Array<{ occurrence_id: string; reason: string }> = []
+  const skipped: Array<{ occurrence_id: string; reason: string }> = [...preSkipped]
 
-  for (const occurrence of pendingOccurrences) {
+  for (const occurrence of eligibleOccurrences) {
+    const config = occurrence.org_id ? configByOrg.get(occurrence.org_id) || {} : {}
     const series = occurrence.booking_series
     const quote = occurrence.quotes
     const lead = series?.lead_id ? leadsById.get(series.lead_id) : null
@@ -365,15 +463,17 @@ Deno.serve(async (req) => {
     const addonsLabel = normalizeList(quote?.addons || quote?.custom_addons || [])
 
     try {
-      await sendReminderEmail({
-        to: customerEmail,
-        customerName,
-        cleanType,
-        appointmentDate,
-        appointmentTime,
-        address,
-        addonsLabel,
-      })
+    await sendReminderEmail({
+      to: customerEmail,
+      customerName,
+      cleanType,
+      appointmentDate,
+      appointmentTime,
+      address,
+      addonsLabel,
+      subjectOverride: typeof (config as any).subject === 'string' ? ((config as any).subject as string) : undefined,
+      bodyOverride: typeof (config as any).body === 'string' ? ((config as any).body as string) : undefined,
+    })
 
       sentCount += 1
 

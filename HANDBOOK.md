@@ -459,7 +459,7 @@ Side effects:
        '0 * * * *', -- Every hour at minute 0
        $$
        SELECT net.http_post(
-         url := 'https://etiaoqskgplpfydblzne.supabase.co/functions/v1/marketing-loop-runner',
+         url := 'https://jditayvwnlxktotfybvk.supabase.co/functions/v1/marketing-loop-runner',
          headers := jsonb_build_object(
            'Content-Type', 'application/json',
            'Authorization', 'Bearer YOUR_SERVICE_ROLE_KEY'

@@ -1,7 +1,9 @@
-import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import { AuthProvider } from './lib/auth'
 import './index.css'
 import App from './App.tsx'
+import ErrorBoundary from './components/ErrorBoundary'
 import { ToastProvider, CursorGlow } from './components/ui'
 import CommandPalette from './components/ui/CommandPalette'
 
@@ -12,19 +14,23 @@ if (preloader) {
 }
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ToastProvider>
-      {/* Aurora background */}
-      <div className="aurora-bg" />
-      
-      {/* Cursor glow effect */}
-      <CursorGlow />
-      
-      {/* Main app */}
-      <App />
-      
-      {/* Command palette - available everywhere */}
-      <CommandPalette commands={[]} />
-    </ToastProvider>
-  </StrictMode>,
+  <BrowserRouter>
+    <AuthProvider>
+      <ToastProvider>
+        {/* Aurora background */}
+        <div className="aurora-bg" />
+
+        {/* Cursor glow effect */}
+        <CursorGlow />
+
+        {/* Main app */}
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
+
+        {/* Command palette - available everywhere */}
+        <CommandPalette commands={[]} />
+      </ToastProvider>
+    </AuthProvider>
+  </BrowserRouter>,
 )

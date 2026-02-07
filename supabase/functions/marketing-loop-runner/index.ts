@@ -120,6 +120,27 @@ async function sendEmail(to: string, subject: string, body: string): Promise<{ s
   }
 }
 
+async function loadAutomationFlags(
+  supabase: ReturnType<typeof createClient>,
+  automationType: string,
+  orgIds: string[]
+): Promise<Map<string, boolean>> {
+  const enabledByOrg = new Map<string, boolean>()
+  if (orgIds.length === 0) return enabledByOrg
+
+  const { data } = await supabase
+    .from('organization_automation_settings')
+    .select('org_id, enabled')
+    .in('org_id', orgIds)
+    .eq('automation_type', automationType)
+
+  ;(data || []).forEach((row: any) => {
+    enabledByOrg.set(row.org_id, row.enabled ?? true)
+  })
+
+  return enabledByOrg
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', {
@@ -145,7 +166,7 @@ Deno.serve(async (req) => {
     // Process SMS journeys
     const { data: smsJourneys, error: smsError } = await supabase
       .from('marketing_sms_journeys')
-      .select('id, lead_id, current_step, started_at, next_send_at')
+      .select('id, lead_id, org_id, current_step, started_at, next_send_at')
       .eq('status', 'active')
       .lte('next_send_at', nowIso)
       .is('locked_at', null)
@@ -158,6 +179,8 @@ Deno.serve(async (req) => {
     const smsResults: any[] = []
 
     if (smsJourneys && smsJourneys.length > 0) {
+      const smsOrgIds = Array.from(new Set(smsJourneys.map((j) => j.org_id).filter(Boolean)))
+      const smsEnabledByOrg = await loadAutomationFlags(supabase, 'marketing_sms', smsOrgIds as string[])
       // Lock journeys
       const journeyIds = smsJourneys.map((j) => j.id)
       await supabase
@@ -166,6 +189,20 @@ Deno.serve(async (req) => {
         .in('id', journeyIds)
 
       for (const journey of smsJourneys) {
+        const smsEnabled = journey.org_id ? (smsEnabledByOrg.get(journey.org_id) ?? true) : true
+        if (!smsEnabled) {
+          await supabase
+            .from('marketing_sms_journeys')
+            .update({
+              status: 'paused',
+              last_error: 'automation_disabled',
+              locked_at: null,
+              locked_by: null,
+              updated_at: nowIso,
+            })
+            .eq('id', journey.id)
+          continue
+        }
         try {
           // Get lead info
           const { data: lead } = await supabase
@@ -282,7 +319,7 @@ Deno.serve(async (req) => {
     // Process Email journeys
     const { data: emailJourneys, error: emailError } = await supabase
       .from('marketing_email_journeys')
-      .select('id, lead_id, current_step, started_at, next_send_at')
+      .select('id, lead_id, org_id, current_step, started_at, next_send_at')
       .eq('status', 'active')
       .lte('next_send_at', nowIso)
       .is('locked_at', null)
@@ -295,6 +332,8 @@ Deno.serve(async (req) => {
     const emailResults: any[] = []
 
     if (emailJourneys && emailJourneys.length > 0) {
+      const emailOrgIds = Array.from(new Set(emailJourneys.map((j) => j.org_id).filter(Boolean)))
+      const emailEnabledByOrg = await loadAutomationFlags(supabase, 'marketing_email', emailOrgIds as string[])
       // Lock journeys
       const journeyIds = emailJourneys.map((j) => j.id)
       await supabase
@@ -303,6 +342,20 @@ Deno.serve(async (req) => {
         .in('id', journeyIds)
 
       for (const journey of emailJourneys) {
+        const emailEnabled = journey.org_id ? (emailEnabledByOrg.get(journey.org_id) ?? true) : true
+        if (!emailEnabled) {
+          await supabase
+            .from('marketing_email_journeys')
+            .update({
+              status: 'paused',
+              last_error: 'automation_disabled',
+              locked_at: null,
+              locked_by: null,
+              updated_at: nowIso,
+            })
+            .eq('id', journey.id)
+          continue
+        }
         try {
           // Get lead info
           const { data: lead } = await supabase

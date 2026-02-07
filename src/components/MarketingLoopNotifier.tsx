@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 
 type NotificationItem = {
   id: string
@@ -12,10 +13,13 @@ type NotificationItem = {
 const DISMISS_AFTER_MS = 6000
 
 export default function MarketingLoopNotifier() {
+  const { currentOrg } = useAuth()
   const [queue, setQueue] = useState<NotificationItem[]>([])
   const timeoutsRef = useRef<Map<string, number>>(new Map())
 
   useEffect(() => {
+    if (!currentOrg) return
+
     const pushNotification = async (payload: any, channel: 'sms' | 'email') => {
       const log = payload?.new
       if (!log?.lead_id || log?.status !== 'sent') return
@@ -23,6 +27,7 @@ export default function MarketingLoopNotifier() {
       const { data: lead } = await supabase
         .from('extracted_leads')
         .select('name')
+        .eq('org_id', currentOrg.id)
         .eq('id', log.lead_id)
         .maybeSingle()
 
@@ -46,11 +51,15 @@ export default function MarketingLoopNotifier() {
 
     const channel = supabase
       .channel('marketing_loop_notifications')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'marketing_sms_logs' }, (payload) =>
-        pushNotification(payload, 'sms')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'marketing_sms_logs', filter: 'org_id=eq.' + currentOrg.id },
+        (payload) => pushNotification(payload, 'sms')
       )
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'marketing_email_logs' }, (payload) =>
-        pushNotification(payload, 'email')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'marketing_email_logs', filter: 'org_id=eq.' + currentOrg.id },
+        (payload) => pushNotification(payload, 'email')
       )
       .subscribe()
 
@@ -59,7 +68,7 @@ export default function MarketingLoopNotifier() {
       timeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId))
       timeoutsRef.current.clear()
     }
-  }, [])
+  }, [currentOrg])
 
   if (queue.length === 0) return null
 

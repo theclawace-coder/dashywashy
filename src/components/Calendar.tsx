@@ -5,6 +5,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { EventClickArg, EventDropArg, EventContentArg } from '@fullcalendar/core'
+import { useAuth } from '../lib/auth'
 import { supabase } from '../lib/supabase'
 import { playSaveSound } from '../lib/sounds'
 import { format } from 'date-fns'
@@ -564,6 +565,7 @@ function EventDetailModal({
 }
 
 export default function Calendar() {
+  const { currentOrg } = useAuth()
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null)
@@ -632,6 +634,7 @@ export default function Calendar() {
       const { data, error } = await supabase
         .from('cleaners')
         .select('id, full_name, active')
+        .eq('org_id', currentOrg!.id)
         .order('full_name', { ascending: true })
         .limit(500)
       if (error) throw error
@@ -669,6 +672,7 @@ export default function Calendar() {
           *,
           series:booking_series(*, lead:extracted_leads(*))
         `)
+        .eq('org_id', currentOrg!.id)
         .gte('start_at', start.toISOString())
         .lt('start_at', end.toISOString())
         .order('start_at', { ascending: true })
@@ -774,13 +778,14 @@ export default function Calendar() {
         original_start_at: originalStartAt,
       })
       .eq('id', occurrenceId)
+      .eq('org_id', currentOrg!.id)
 
     if (error) {
       console.error('Error moving booking:', error)
       setActionError('Could not move booking. Please try again.')
       info.revert()
     }
-  }, [])
+  }, [currentOrg])
 
   // Update occurrence status
   const handleStatusChange = useCallback(async (occurrenceId: string, status: string) => {
@@ -789,6 +794,7 @@ export default function Calendar() {
       .from('booking_occurrences')
       .update({ status })
       .eq('id', occurrenceId)
+      .eq('org_id', currentOrg!.id)
 
     if (error) {
       console.error('Error updating status:', error)
@@ -802,7 +808,7 @@ export default function Calendar() {
         const ev = events.find((e) => e.id === occurrenceId) || selectedEvent || null
         const leadId = ev?.extendedProps?.series?.lead_id || ev?.extendedProps?.lead?.id || null
         if (leadId) {
-          await supabase.from('extracted_leads').update({ status: 'Jobs Completed' }).eq('id', leadId)
+          await supabase.from('extracted_leads').update({ status: 'Jobs Completed' }).eq('id', leadId).eq('org_id', currentOrg!.id)
         }
       } catch (leadErr) {
         console.warn('Failed to update lead status for completed job', leadErr)
@@ -853,6 +859,7 @@ export default function Calendar() {
         .from('booking_occurrences')
         .update({ cleaner_id: cleanerId, assigned_at: cleanerId ? new Date().toISOString() : null })
         .eq('id', occurrenceId)
+        .eq('org_id', currentOrg!.id)
       if (error) {
         console.error('Error assigning cleaner:', error)
         return
@@ -868,6 +875,7 @@ export default function Calendar() {
         .from('booking_series')
         .update({ service_address: address, service_lat: lat, service_lng: lng })
         .eq('id', seriesId)
+        .eq('org_id', currentOrg!.id)
       if (error) {
         console.error('Error updating address:', error)
         return
@@ -883,6 +891,7 @@ export default function Calendar() {
     setReviewError(null)
     try {
       const { error } = await supabase.from('cleaner_job_reviews').insert({
+        org_id: currentOrg!.id,
         occurrence_id: reviewTarget.occurrenceId,
         cleaner_id: reviewTarget.cleanerId,
         rating: reviewRating,
@@ -916,6 +925,7 @@ export default function Calendar() {
         original_start_at: originalStartAt,
       })
       .eq('id', occurrenceId)
+      .eq('org_id', currentOrg!.id)
 
     if (error) {
       console.error('Error rescheduling:', error)
@@ -923,7 +933,7 @@ export default function Calendar() {
     }
 
     fetchBookings(dateRange.start, dateRange.end)
-  }, [events, fetchBookings, dateRange])
+  }, [events, fetchBookings, dateRange, currentOrg])
 
   const handleDeleteLead = useCallback(
     async (leadId: string) => {
@@ -932,7 +942,7 @@ export default function Calendar() {
       setActionError(null)
       setDeletingLeadId(leadId)
       try {
-        const { error } = await supabase.from('extracted_leads').delete().eq('id', leadId)
+        const { error } = await supabase.from('extracted_leads').delete().eq('id', leadId).eq('org_id', currentOrg!.id)
         if (error) throw error
         setSelectedEvent(null)
         fetchBookings(dateRange.start, dateRange.end)
@@ -966,10 +976,10 @@ export default function Calendar() {
   useEffect(() => {
     const channel = supabase
       .channel('booking_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_occurrences' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_occurrences', filter: 'org_id=eq.' + currentOrg!.id }, () => {
         fetchBookings(dateRange.start, dateRange.end)
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_series' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_series', filter: 'org_id=eq.' + currentOrg!.id }, () => {
         fetchBookings(dateRange.start, dateRange.end)
       })
       .subscribe()
@@ -978,6 +988,8 @@ export default function Calendar() {
       supabase.removeChannel(channel)
     }
   }, [fetchBookings, dateRange])
+
+  if (!currentOrg) return null
 
   return (
     <div className="min-h-screen p-4 md:p-6 lg:p-8">
@@ -1041,7 +1053,7 @@ export default function Calendar() {
         ) : null}
 
         {/* Calendar */}
-        <GlassCard className="p-4 md:p-6 overflow-hidden">
+        <GlassCard className="p-4 md:p-6 overflow-hidden" data-tour="calendar-schedule">
           {fetchError ? (
             <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-sm flex items-center gap-3">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1288,5 +1300,4 @@ export default function Calendar() {
     </div>
   )
 }
-
 

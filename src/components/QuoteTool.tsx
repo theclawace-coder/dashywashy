@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
 import { playSaveSound } from '../lib/sounds'
 import { fetchMapboxToken } from '../lib/mapbox'
 import {
@@ -20,14 +21,6 @@ import {
   type ServiceType,
 } from '../lib/quoteCalculator'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://etiaoqskgplpfydblzne.supabase.co'
-const supabaseAnonKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0aWFvcXNrZ3BscGZ5ZGJsem5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMzI0NzAsImV4cCI6MjA4MjgwODQ3MH0.c-AlsveEx_bxVgEivga3PRrBp5ylY3He9EJXbaa2N2c'
-const dialpadUserId = '6452247499866112'
-const dialpadToken =
-  'NNRYnLXqJgkWXePcCG2SGCVzHfuB6kxAqQATPvnmn3x6k5RevHUCPdF8zF8jqXsssuyG67bEALxZH9TACsq4aARA46VL4yZ246Kf'
-const dialpadSmsEndpoint = 'https://dialpad.com/api/v2/sms'
 
 type LeadReference = {
   id?: string
@@ -119,6 +112,7 @@ function generateShareToken() {
 }
 
 export default function QuoteTool({ lead, emailId, autoEditLatest = false }: QuoteToolProps) {
+  const { currentOrg } = useAuth()
   const [form, setForm] = useState<QuoteInput>({
     service: 'general',
     bedrooms: 2,
@@ -204,6 +198,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
       const { data, error } = await supabase
         .from('quotes')
         .select('*')
+        .eq('org_id', currentOrg!.id)
         .eq('lead_id', leadId)
         .is('base_quote_id', null)
         .order('created_at', { ascending: false })
@@ -352,6 +347,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
       const { data: seriesRows, error: seriesErr } = await supabase
         .from('booking_series')
         .select('id, quote_id, status, created_at')
+        .eq('org_id', currentOrg!.id)
         .eq('lead_id', quote.lead_id)
         .order('created_at', { ascending: false })
 
@@ -380,7 +376,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
         updatePayload.service_lng = quote.address_lng
       }
 
-      await supabase.from('booking_series').update(updatePayload).eq('id', target.id)
+      await supabase.from('booking_series').update(updatePayload).eq('id', target.id).eq('org_id', currentOrg!.id)
     } catch (err) {
       console.warn('Quote save: failed to sync booking address/quote link', err)
     }
@@ -487,11 +483,11 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
       let saved: QuoteRecord | null = null
       const shouldUpdate = mode === 'auto' ? Boolean(editingQuoteId) : false
       if (shouldUpdate) {
-        const { data, error } = await supabase.from('quotes').update(payload).eq('id', editingQuoteId).select('*').single()
+        const { data, error } = await supabase.from('quotes').update(payload).eq('id', editingQuoteId).eq('org_id', currentOrg!.id).select('*').single()
         if (error) throw error
         saved = data as QuoteRecord
       } else {
-        const { data, error } = await supabase.from('quotes').insert(payload).select('*').single()
+        const { data, error } = await supabase.from('quotes').insert({ ...payload, org_id: currentOrg!.id }).select('*').single()
         if (error) throw error
         saved = data as QuoteRecord
       }
@@ -506,6 +502,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
             phone_number: customerPhone || null,
           })
           .eq('id', targetLeadId)
+          .eq('org_id', currentOrg!.id)
         if (leadErr) {
           console.error('Failed to update extracted lead contact info', leadErr)
         }
@@ -737,38 +734,22 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     setIsSmsSending(true)
     setSmsError(null)
     try {
-      const response = await fetch(dialpadSmsEndpoint, {
+      const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          accept: 'application/json',
-          authorization: `Bearer ${dialpadToken}`,
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
         },
         body: JSON.stringify({
-          infer_country_code: false,
-          to_numbers: [targetPhone],
-          user_id: dialpadUserId,
-          text: smsBody,
+          phone_number: targetPhone,
+          message: smsBody,
         }),
       })
 
-      const textBody = await response.text()
-      let parsed: any = null
-      try {
-        parsed = textBody ? JSON.parse(textBody) : null
-      } catch {
-        parsed = null
-      }
-
-      if (!response.ok || parsed?.error) {
-        const rawError = parsed?.error
-        const errorDetail =
-          typeof rawError === 'string'
-            ? rawError
-            : rawError
-            ? JSON.stringify(rawError)
-            : textBody || `Failed to send SMS (status ${response.status})`
-        throw new Error(errorDetail)
+      const data = await response.json()
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || `Failed to send SMS (status ${response.status})`)
       }
 
       const targetLeadId = leadId || editingLeadId
@@ -786,11 +767,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
       setSaveMessage(`Quote SMS sent to ${targetPhone}.`)
     } catch (err: any) {
       console.error('Quote SMS send failed', err)
-      if (err?.message?.includes('Failed to fetch')) {
-        setSmsError('Failed to reach Dialpad. Browser may be blocking the request (CORS). Try again or use a server-side proxy.')
-      } else {
-        setSmsError(err instanceof Error ? err.message : 'Failed to send quote SMS')
-      }
+      setSmsError(err instanceof Error ? err.message : 'Failed to send quote SMS')
     } finally {
       setIsSmsSending(false)
     }
@@ -853,43 +830,26 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     setIsDescLoading(true)
     setCalcError(null)
     try {
-      const payload = {
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You write a concise (30–60 words) customer-facing summary of cleaning work. Use only the provided facts (service, rooms, add-ons, custom add-ons, notes). No assumptions or extra services. Be clear, friendly, and factual. Do not present the customer as part of the cleaning team.',
-          },
-          {
-            role: 'user',
-            content: `Create a 30–60 word summary of what Sydney Premium Cleaning will do. Facts only, no hallucinations. Name: ${
-              lead?.name || 'customer'
-            }. Service: ${form.service}. Bedrooms: ${form.bedrooms}. Bathrooms: ${form.bathrooms}. Add-ons: ${
-              form.addons.join(', ') || 'none'
-            }. Custom add-ons: ${form.customAddons.map((c) => `${c.name} $${c.price}`).join(', ') || 'none'}. Notes: ${
-              notes || 'none'
-            }. The name is the customer/recipient, not the cleaning provider. Refer to the customer as "you" or by name, and the cleaner as Sydney Premium Cleaning.`,
-          },
-        ],
-        temperature: 0.6,
-        max_tokens: 180,
-      }
-      const apiKey = import.meta.env.VITE_OPENAI_KEY
-      if (!apiKey) {
-        throw new Error('Missing VITE_OPENAI_KEY for description generation')
-      }
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await fetch(`${supabaseUrl}/functions/v1/generate-quote-description`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          customerName: lead?.name || 'customer',
+          service: form.service,
+          bedrooms: form.bedrooms,
+          bathrooms: form.bathrooms,
+          addons: form.addons,
+          customAddons: form.customAddons,
+          notes: notes || '',
+        }),
       })
       const data = await res.json()
-      const text = data?.choices?.[0]?.message?.content?.trim()
-      if (!text) throw new Error('No description returned')
+      const text = data?.description?.trim()
+      if (!res.ok || !text) throw new Error(data?.error || 'No description returned')
       setDescription(text)
     } catch (err) {
       console.error('Description generation failed', err)
@@ -952,8 +912,10 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     resetBookingFields()
   }
 
+  if (!currentOrg) return null
+
   return (
-    <div className="rounded-xl border border-white/10 bg-[var(--color-surface-light)] p-4 space-y-4">
+    <div className="rounded-xl border border-white/10 bg-[var(--color-surface-light)] p-4 space-y-4" data-tour="quote-builder">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs uppercase text-[var(--color-text-muted)] tracking-wider">Quote tool</p>
@@ -1420,7 +1382,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
         </div>
       )}
       {saveMessage && (
-        <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-sm">
+        <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-sm" data-testid="quote-save-message">
           {saveMessage}
         </div>
       )}
@@ -1470,6 +1432,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
               onClick={() => handleSaveQuote('auto')}
               disabled={!leadId || !calcResult || isSaving}
               className="w-full rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold py-2 disabled:opacity-60"
+              data-testid="quote-save"
             >
               {isSaving ? 'Saving...' : editingQuoteId ? 'Update quote' : 'Save quote'}
             </button>
@@ -1479,6 +1442,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
                 disabled={!leadId || !calcResult || isSaving}
                 className="w-full rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm py-2 disabled:opacity-60"
                 type="button"
+                data-testid="quote-save-new"
               >
                 Save as new quote
               </button>
@@ -1487,6 +1451,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
               onClick={handleCopyLink}
               disabled={!shareUrl}
               className="w-full rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm py-2 disabled:opacity-60"
+              data-testid="quote-copy-link"
             >
               Copy share link
             </button>
@@ -1495,6 +1460,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
               disabled={!latestQuote || isEmailSending}
               className="w-full inline-flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm py-2 disabled:opacity-60"
               type="button"
+              data-testid="quote-email"
             >
               {isEmailSending ? 'Sending quote…' : 'Email quote'}
             </button>
@@ -1503,6 +1469,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
               disabled={!latestQuote || isSmsSending || !shareUrl}
               className="w-full inline-flex items-center justify-center rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm py-2 disabled:opacity-60"
               type="button"
+              data-testid="quote-sms"
             >
               {isSmsSending ? 'Sending SMS…' : 'SMS quote'}
             </button>
@@ -1512,6 +1479,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
                 target="_blank"
                 rel="noreferrer"
                 className="w-full inline-flex items-center justify-center rounded-lg bg-[var(--color-surface)] border border-white/10 text-white text-sm py-2"
+                data-testid="quote-share-open"
               >
                 Open public link
               </a>
@@ -1552,6 +1520,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
               disabled={!calcResult || stripeLinkLoading || latestQuote?.accepted_payment_method === 'card_paid'}
               className="w-full rounded-lg text-white text-sm font-semibold py-2 disabled:opacity-60 bg-blue-600 hover:bg-blue-700 disabled:bg-emerald-700/30 disabled:border disabled:border-emerald-500/40"
               type="button"
+              data-testid="quote-stripe-generate"
             >
               {latestQuote?.accepted_payment_method === 'card_paid' ? 'Paid' : 'Generate Stripe Payment Link'}
             </button>
@@ -1652,7 +1621,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
                     onClick={async () => {
                       const confirmed = window.confirm('Delete this quote?')
                       if (!confirmed) return
-                      const { error } = await supabase.from('quotes').delete().eq('id', quote.id)
+                      const { error } = await supabase.from('quotes').delete().eq('id', quote.id).eq('org_id', currentOrg!.id)
                       if (error) {
                         console.error('Delete failed', error)
                         setCalcError(error.message || 'Failed to delete quote')
@@ -1677,4 +1646,3 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     </div>
   )
 }
-

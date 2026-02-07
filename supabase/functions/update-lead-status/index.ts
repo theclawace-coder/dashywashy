@@ -1,42 +1,17 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
-
-const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-const supabaseAnonKey = Deno.env.get('PUBLIC_SUPABASE_ANON_KEY') || ''
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': '*',
-    },
-  })
-}
+import { resolveOrgFromRequest, corsHeaders, jsonResponse, jsonError } from '../_shared/org-resolver.ts'
 
 Deno.serve(async (req) => {
-  // CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response('ok', {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      },
-    })
+    return new Response('ok', { headers: corsHeaders })
   }
 
   if (req.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405)
+    return jsonError('Method not allowed', 405)
   }
 
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return jsonResponse({ error: 'Server configuration error' }, 500)
-  }
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey)
+  try {
+  const { orgId, supabaseAdmin } = await resolveOrgFromRequest(req)
+  const supabase = supabaseAdmin
 
   let payload: { leadId?: string; status?: string | null }
   try {
@@ -67,6 +42,7 @@ Deno.serve(async (req) => {
       .from('extracted_leads')
       .select('id, status')
       .eq('id', leadId)
+      .eq('org_id', orgId)
       .maybeSingle()
 
     if (!currentLead) {
@@ -81,6 +57,7 @@ Deno.serve(async (req) => {
       .from('extracted_leads')
       .update({ status: normalizedStatus })
       .eq('id', leadId)
+      .eq('org_id', orgId)
       .select('id, status')
       .maybeSingle()
 
@@ -93,10 +70,11 @@ Deno.serve(async (req) => {
     }
 
     // Handle Marketing Loop journey start/stop
-    const supabaseUrlEnv = Deno.env.get('SUPABASE_URL') || supabaseUrl
+    const supabaseUrlEnv = Deno.env.get('SUPABASE_URL') || ''
     const actionsUrl = `${supabaseUrlEnv}/functions/v1/marketing-loop-actions`
 
-    const actionAuthKey = supabaseAnonKey || supabaseServiceKey
+    const authHeader = req.headers.get('Authorization') || ''
+    const actionAuthKey = authHeader.replace('Bearer ', '') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
 
     // If moving TO Marketing Loop, start journeys
     if (normalizedStatus === 'Marketing Loop' && previousStatusNormalized !== 'Marketing Loop') {
@@ -155,7 +133,12 @@ Deno.serve(async (req) => {
     return jsonResponse({ success: true, leadId: data.id, status: data.status })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unexpected error'
-    return jsonResponse({ error: message }, 500)
+    return jsonError(message, 500)
+  }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unexpected error'
+    const status = message === 'Unauthorized' ? 401 : 500
+    return jsonError(message, status)
   }
 })
 

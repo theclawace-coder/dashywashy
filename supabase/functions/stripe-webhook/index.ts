@@ -7,13 +7,11 @@
 
 import Stripe from 'https://esm.sh/stripe@12.18.0?target=deno'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
+import { getOrgIntegration } from '../_shared/org-resolver.ts'
 
-const stripeSecret = Deno.env.get('STRIPE_SECRET_KEY') || ''
-const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET') || ''
 const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
 const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
 
-const stripe = new Stripe(stripeSecret, { apiVersion: '2024-06-20' })
 const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 })
@@ -71,7 +69,7 @@ async function markQuotePaid(quoteId: string, paidAt: string) {
   }
 }
 
-async function handleCheckoutSession(session: Stripe.Checkout.Session) {
+async function handleCheckoutSession(session: Stripe.Checkout.Session, stripe: Stripe) {
   const paidAt = new Date().toISOString()
   const amountCents = typeof session.amount_total === 'number' ? session.amount_total : null
   const paymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : null
@@ -129,7 +127,7 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Method not allowed' }, 405)
   }
 
-  if (!stripeSecret || !webhookSecret || !supabaseUrl || !supabaseServiceKey) {
+  if (!supabaseUrl || !supabaseServiceKey) {
     return jsonResponse({ error: 'Server missing required configuration' }, 500)
   }
 
@@ -139,6 +137,31 @@ Deno.serve(async (req) => {
   }
 
   const rawBody = await req.text()
+
+  // We need to determine which org this webhook is for.
+  // Parse the raw body to extract org_id from metadata, then load the org's Stripe config.
+  let parsedBody: any = {}
+  try { parsedBody = JSON.parse(rawBody) } catch { /* ignore */ }
+
+  const eventMetadata = parsedBody?.data?.object?.metadata || {}
+  const orgIdFromMeta = eventMetadata.org_id || ''
+
+  // Try to determine stripe secrets from the org integration, fall back to env
+  let stripeSecret = Deno.env.get('STRIPE_SECRET_KEY') || ''
+  let webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET') || ''
+
+  if (orgIdFromMeta) {
+    const stripeConfig = await getOrgIntegration(supabaseAdmin, orgIdFromMeta, 'stripe')
+    if (stripeConfig.secret_key) stripeSecret = stripeConfig.secret_key
+    if (stripeConfig.webhook_secret) webhookSecret = stripeConfig.webhook_secret
+  }
+
+  if (!stripeSecret || !webhookSecret) {
+    return jsonResponse({ error: 'Stripe not configured' }, 500)
+  }
+
+  const stripe = new Stripe(stripeSecret, { apiVersion: '2024-06-20' })
+
   let event: Stripe.Event
 
   try {
@@ -151,7 +174,7 @@ Deno.serve(async (req) => {
   try {
     switch (event.type) {
       case 'checkout.session.completed':
-        await handleCheckoutSession(event.data.object as Stripe.Checkout.Session)
+        await handleCheckoutSession(event.data.object as Stripe.Checkout.Session, stripe)
         break
       case 'payment_intent.succeeded':
       case 'payment_intent.processing':

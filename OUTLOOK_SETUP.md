@@ -89,7 +89,7 @@ For **instant email notifications** using Microsoft Graph webhooks:
 1. **Call the setup endpoint** to create a subscription:
 
 ```bash
-curl -X POST https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook-webhook \
+curl -X POST https://jditayvwnlxktotfybvk.supabase.co/functions/v1/setup-outlook-webhook \
   -H "Content-Type: application/json" \
   -d '{"action": "create"}'
 ```
@@ -97,13 +97,13 @@ curl -X POST https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook
 2. **List existing subscriptions**:
 
 ```bash
-curl https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook-webhook
+curl https://jditayvwnlxktotfybvk.supabase.co/functions/v1/setup-outlook-webhook
 ```
 
 3. **Renew subscription** (subscriptions expire after ~3 days):
 
 ```bash
-curl -X POST https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook-webhook \
+curl -X POST https://jditayvwnlxktotfybvk.supabase.co/functions/v1/setup-outlook-webhook \
   -H "Content-Type: application/json" \
   -d '{"action": "renew", "subscription_id": "your-subscription-id"}'
 ```
@@ -111,7 +111,7 @@ curl -X POST https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook
 4. **Delete subscription**:
 
 ```bash
-curl -X POST https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook-webhook \
+curl -X POST https://jditayvwnlxktotfybvk.supabase.co/functions/v1/setup-outlook-webhook \
   -H "Content-Type: application/json" \
   -d '{"action": "delete", "subscription_id": "your-subscription-id"}'
 ```
@@ -130,7 +130,7 @@ You need additional permissions for webhooks to work:
 
 The webhook receives notifications at:
 ```
-https://etiaoqskgplpfydblzne.supabase.co/functions/v1/outlook-webhook
+https://jditayvwnlxktotfybvk.supabase.co/functions/v1/outlook-webhook
 ```
 
 ### Auto-Renewal
@@ -155,7 +155,7 @@ SELECT cron.schedule(
   '0 0 * * *', -- Daily at midnight UTC
   $$
   SELECT net.http_post(
-    url:='https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook-webhook',
+    url:='https://jditayvwnlxktotfybvk.supabase.co/functions/v1/setup-outlook-webhook',
     headers:='{"Content-Type": "application/json"}'::jsonb,
     body:='{"action": "create"}'::jsonb,
     timeout_milliseconds:=30000
@@ -177,7 +177,7 @@ If `pg_cron` is not available, use an external cron service:
 **Using cron-job.org:**
 1. Go to [cron-job.org](https://cron-job.org)
 2. Create a new cron job
-3. Set URL: `https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook-webhook`
+3. Set URL: `https://jditayvwnlxktotfybvk.supabase.co/functions/v1/setup-outlook-webhook`
 4. Method: `POST`
 5. Headers: `Content-Type: application/json`
 6. Body: `{"action": "create"}`
@@ -198,7 +198,7 @@ jobs:
     steps:
       - name: Renew webhook subscription
         run: |
-          curl -X POST https://etiaoqskgplpfydblzne.supabase.co/functions/v1/setup-outlook-webhook \
+          curl -X POST https://jditayvwnlxktotfybvk.supabase.co/functions/v1/setup-outlook-webhook \
             -H "Content-Type: application/json" \
             -d '{"action": "create"}'
 ```
@@ -222,7 +222,7 @@ SELECT cron.schedule(
   '0 * * * *', -- Every hour
   $$
   SELECT net.http_post(
-    url:='https://etiaoqskgplpfydblzne.supabase.co/functions/v1/outlook-email-sync',
+    url:='https://jditayvwnlxktotfybvk.supabase.co/functions/v1/outlook-email-sync',
     headers:='{"Content-Type": "application/json"}'::jsonb
   ) AS request_id;
   $$
@@ -234,7 +234,7 @@ SELECT cron.schedule(
 Use a service like [cron-job.org](https://cron-job.org) or [EasyCron](https://www.easycron.com) to call:
 
 ```
-POST https://etiaoqskgplpfydblzne.supabase.co/functions/v1/outlook-email-sync
+POST https://jditayvwnlxktotfybvk.supabase.co/functions/v1/outlook-email-sync
 ```
 
 Set it to run every hour or as needed.

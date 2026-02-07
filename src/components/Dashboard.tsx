@@ -7,6 +7,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { supabase, supabaseUrl, supabaseAnonKey, type DialpadCall, type DialpadSms, type DialpadEmail } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 import { playSaveSound } from '../lib/sounds'
 import { subDays } from 'date-fns'
 import { GlassCard, Button, Badge, StatCard, ProgressRing, StreakBadge, Encouragement, useToast } from './ui'
@@ -59,11 +60,6 @@ interface ExtractedLead {
   last_text_body?: string | null
 }
 
-const dialpadUserId = '6452247499866112'
-const dialpadUrl = `https://dialpad.com/api/v2/users/${dialpadUserId}/initiate_call`
-const dialpadToken =
-  'NNRYnLXqJgkWXePcCG2SGCVzHfuB6kxAqQATPvnmn3x6k5RevHUCPdF8zF8jqXsssuyG67bEALxZH9TACsq4aARA46VL4yZ246Kf'
-
 const LEAD_STATUS_OPTIONS = [
   'Unanswered',
   'Marketing Loop',
@@ -113,6 +109,16 @@ function isValidAusPhone(phone: string) {
 function isValidEmail(email: string) {
   const cleaned = email.trim()
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleaned)
+}
+
+function getLeadDisplayName(lead: ExtractedLead) {
+  const name = lead.name?.trim()
+  if (name) return name
+  const email = lead.email?.trim()
+  if (email) return email
+  const phone = lead.phone_number?.trim()
+  if (phone) return phone
+  return 'Unknown'
 }
 
 function generateUuid() {
@@ -191,6 +197,7 @@ type EmailWebhookStatus = {
 
 export default function Dashboard() {
   const { addToast } = useToast()
+  const { currentOrg } = useAuth()
   const [metrics, setMetrics] = useState<Metrics>({
     uniqueCalls: 0,
     outboundCalls: 0,
@@ -242,6 +249,7 @@ export default function Dashboard() {
 
   // Fetch metrics
   const fetchMetrics = useCallback(async () => {
+    if (!currentOrg) return
     try {
       setError(null)
       const todayStartIso = getStartOfToday()
@@ -267,6 +275,7 @@ export default function Dashboard() {
       const { data: calls, error: callsError } = await supabase
         .from('dialpad_calls')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .gte('created_at', lookbackStartIso)
         .order('created_at', { ascending: false })
 
@@ -275,6 +284,7 @@ export default function Dashboard() {
       const { data: sms, error: smsError } = await supabase
         .from('dialpad_sms')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .gte('created_at', lookbackStartIso)
         .order('created_at', { ascending: false })
 
@@ -283,6 +293,7 @@ export default function Dashboard() {
       const { data: emails, error: emailsError } = await supabase
         .from('dialpad_emails')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .gte('created_at', lookbackStartIso)
         .order('created_at', { ascending: false })
 
@@ -360,6 +371,7 @@ export default function Dashboard() {
         const leadQuery = supabase
           .from('extracted_leads')
           .select('*')
+          .eq('org_id', currentOrg.id)
           .order('created_at', { ascending: false })
           .limit(100)
 
@@ -401,6 +413,7 @@ export default function Dashboard() {
         const { data: quotesData, error: quotesError } = await supabase
           .from('quotes')
           .select('lead_id, created_at')
+          .eq('org_id', currentOrg.id)
           .gte('created_at', dateStartIso)
           .lte('created_at', dateEndIso)
 
@@ -550,6 +563,7 @@ export default function Dashboard() {
 
   // Initial fetch and realtime subscription
   useEffect(() => {
+    if (!currentOrg) return
     fetchMetrics()
     fetchEmailWebhookStatus()
     const emailStatusInterval = setInterval(fetchEmailWebhookStatus, 5 * 60 * 1000)
@@ -557,17 +571,17 @@ export default function Dashboard() {
     // Realtime subscriptions
     const callsChannel = supabase
       .channel('dialpad_calls_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_calls' }, () => fetchMetrics())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_calls', filter: 'org_id=eq.' + currentOrg.id }, () => fetchMetrics())
       .subscribe()
 
     const smsChannel = supabase
       .channel('dialpad_sms_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_sms' }, () => fetchMetrics())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_sms', filter: 'org_id=eq.' + currentOrg.id }, () => fetchMetrics())
       .subscribe()
 
     const emailsChannel = supabase
       .channel('dialpad_emails_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_emails' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_emails', filter: 'org_id=eq.' + currentOrg.id }, (payload) => {
         const email = payload.new as any
         const isLead = email?.subject && (
           /^New message from\s+"[^"]+"$/i.test(email.subject.replace(/&quot;/g, '"').trim()) ||
@@ -585,7 +599,7 @@ export default function Dashboard() {
 
     const extractedLeadsChannel = supabase
       .channel('extracted_leads_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'extracted_leads' }, () => fetchMetrics())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id }, () => fetchMetrics())
       .subscribe()
 
     // Listen for sync-emails event from command palette
@@ -600,7 +614,7 @@ export default function Dashboard() {
       supabase.removeChannel(extractedLeadsChannel)
       window.removeEventListener('sync-emails', handleSyncEmails)
     }
-  }, [fetchMetrics, fetchEmailWebhookStatus])
+  }, [fetchMetrics, fetchEmailWebhookStatus, currentOrg])
 
   // Action handlers
   const handleRefresh = () => {
@@ -614,10 +628,14 @@ export default function Dashboard() {
       setIsLoading(true)
       addToast({ type: 'info', title: 'Syncing emails...', message: 'Pulling latest from Outlook' })
       
-      const response = await fetch(
-        'https://etiaoqskgplpfydblzne.supabase.co/functions/v1/outlook-email-sync',
-        { method: 'POST', headers: { 'Content-Type': 'application/json' } }
-      )
+      const response = await fetch(`${supabaseUrl}/functions/v1/outlook-email-sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+        },
+      })
       
       if (!response.ok) {
         const error = await response.json()
@@ -625,7 +643,7 @@ export default function Dashboard() {
       }
       
       const result = await response.json()
-      addToast({ type: 'success', title: 'Emails synced', message: `${result.synced || 0} new emails processed` })
+      addToast({ type: 'success', title: 'Emails synced', message: `${result.total || 0} emails processed` })
       
       setTimeout(fetchMetrics, 1000)
       fetchEmailWebhookStatus()
@@ -702,6 +720,7 @@ export default function Dashboard() {
   }
 
   const handleCallLead = async (leadId: string, phoneNumber?: string | null) => {
+    if (!currentOrg) return
     if (!phoneNumber) {
       addToast({ type: 'warning', title: 'No phone number', message: 'This lead has no phone number' })
       return
@@ -712,12 +731,12 @@ export default function Dashboard() {
 
     setCallingLeadId(leadId)
     try {
-      const response = await fetch(dialpadUrl, {
+      const response = await fetch(`${supabaseUrl}/functions/v1/call-lead`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          accept: 'application/json',
-          authorization: `Bearer ${dialpadToken}`,
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
         },
         body: JSON.stringify({ phone_number: phoneNumber }),
       })
@@ -735,6 +754,7 @@ export default function Dashboard() {
           .from('extracted_leads')
           .update({ first_contact: nowIso })
           .eq('id', leadId)
+          .eq('org_id', currentOrg.id)
           .is('first_contact', null)
           .select('*')
           .maybeSingle()
@@ -763,6 +783,7 @@ export default function Dashboard() {
   }
 
   const handleDeleteLead = async (lead: ExtractedLead) => {
+    if (!currentOrg) return
     if (!lead.id) return
     if (!window.confirm(lead.name ? `Remove ${lead.name}?` : 'Remove this lead?')) return
     
@@ -770,7 +791,7 @@ export default function Dashboard() {
     setExtractedLeads((prev) => prev.filter((l) => l.id !== lead.id))
     
     try {
-      const { error: deleteError } = await supabase.from('extracted_leads').delete().eq('id', lead.id)
+      const { error: deleteError } = await supabase.from('extracted_leads').delete().eq('id', lead.id).eq('org_id', currentOrg.id)
       if (deleteError) throw deleteError
       addToast({ type: 'success', title: 'Lead removed' })
     } catch (err) {
@@ -783,6 +804,7 @@ export default function Dashboard() {
   }
 
   const handleSaveManualLead = async () => {
+    if (!currentOrg) return
     const name = manualLead.name.trim()
     const phone = manualLead.phone_number.trim()
     const email = manualLead.email.trim()
@@ -821,6 +843,7 @@ export default function Dashboard() {
           created_at: now,
           body: notes || null,
           summary: null,
+          org_id: currentOrg.id,
         })
 
       if (emailInsertError) throw emailInsertError
@@ -834,6 +857,7 @@ export default function Dashboard() {
         extracted_at: now,
         created_at: now,
         status: null,
+        org_id: currentOrg.id,
       }
 
       const { data, error: insertError } = await supabase
@@ -881,6 +905,8 @@ export default function Dashboard() {
     setBookingLead(null)
   }
 
+  if (!currentOrg) return null
+
   // Calculate progress percentage
   const dailyGoal = 10 // Won jobs goal
   const progressPercent = Math.min((metrics.wonJobsSetToday / dailyGoal) * 100, 100)
@@ -905,7 +931,7 @@ export default function Dashboard() {
               </p>
             </div>
 
-            <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-3 flex-wrap" data-tour="dashboard-quick-actions">
               <DatePicker selectedDate={selectedDate ?? new Date()} onDateChange={setSelectedDate} />
               
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--color-surface-elevated)] border border-[var(--glass-border)]">
@@ -959,7 +985,7 @@ export default function Dashboard() {
           <div className="xl:col-span-2 space-y-6">
             
             {/* Daily Progress Card */}
-            <GlassCard className="p-6">
+            <GlassCard className="p-6" data-tour="dashboard-kpis">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h2 className="text-heading text-white">Today's Progress</h2>
@@ -1054,7 +1080,7 @@ export default function Dashboard() {
 
           {/* Right Column - Leads */}
           <div className="xl:col-span-1">
-            <GlassCard className="h-full max-h-[600px] flex flex-col">
+            <GlassCard className="h-full max-h-[600px] flex flex-col" data-tour="dashboard-leads">
               <div className="p-4 border-b border-[var(--glass-border)] flex items-center justify-between">
                 <div>
                   <h2 className="text-heading text-white">Today's Leads</h2>
@@ -1064,6 +1090,7 @@ export default function Dashboard() {
                   onClick={() => setShowManualLeadForm(true)} 
                   variant="primary" 
                   size="sm"
+                  data-testid="lead-add"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -1089,18 +1116,21 @@ export default function Dashboard() {
                       onChange={(e) => setManualLead(prev => ({ ...prev, name: e.target.value }))}
                       placeholder="Name"
                       className="input text-sm"
+                      data-testid="lead-manual-name"
                     />
                     <input
                       value={manualLead.phone_number}
                       onChange={(e) => setManualLead(prev => ({ ...prev, phone_number: e.target.value }))}
                       placeholder="+61..."
                       className="input text-sm"
+                      data-testid="lead-manual-phone"
                     />
                     <input
                       value={manualLead.email}
                       onChange={(e) => setManualLead(prev => ({ ...prev, email: e.target.value }))}
                       placeholder="Email"
                       className="input text-sm"
+                      data-testid="lead-manual-email"
                     />
                     <textarea
                       value={manualLead.region_notes}
@@ -1108,8 +1138,9 @@ export default function Dashboard() {
                       placeholder="Notes..."
                       rows={2}
                       className="input text-sm resize-none"
+                      data-testid="lead-manual-notes"
                     />
-                    <Button onClick={handleSaveManualLead} loading={savingManualLead} variant="primary" className="w-full">
+                    <Button onClick={handleSaveManualLead} loading={savingManualLead} variant="primary" className="w-full" data-testid="lead-manual-save">
                       Save Lead
                     </Button>
                   </div>
@@ -1131,13 +1162,14 @@ export default function Dashboard() {
                     const isNew = isNewLead(lead)
                     
                     return (
-                      <div
-                        key={lead.id}
-                        className={`lead-card ${isNew ? 'lead-card-new' : ''}`}
-                      >
+                        <div
+                          key={lead.id}
+                          className={`lead-card ${isNew ? 'lead-card-new' : ''}`}
+                          data-testid="lead-card"
+                        >
                         <div className="flex items-start justify-between gap-3 mb-3">
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-white truncate">{lead.name || 'Unknown'}</p>
+                            <p className="text-sm font-medium text-white truncate">{getLeadDisplayName(lead)}</p>
                             <p className="text-xs text-[var(--color-text-muted)] truncate">{lead.phone_number || lead.email}</p>
                           </div>
                           <div className="flex items-center gap-2">
@@ -1160,42 +1192,42 @@ export default function Dashboard() {
                         </div>
 
                         <div className="flex items-center gap-2 flex-wrap">
-                          <select
-                            value={lead.status || ''}
-                            onChange={(e) => handleUpdateLeadStatus(lead.id, e.target.value || null)}
-                            disabled={savingStatusId === lead.id}
-                            className="flex-1 min-w-[120px] px-2 py-1.5 rounded-lg bg-[var(--color-surface)] border border-[var(--glass-border)] text-xs text-white focus:outline-none focus:border-[var(--color-accent)]"
-                          >
+                            <select
+                              value={lead.status || ''}
+                              onChange={(e) => handleUpdateLeadStatus(lead.id, e.target.value || null)}
+                              disabled={savingStatusId === lead.id}
+                              className="flex-1 min-w-[120px] px-2 py-1.5 rounded-lg bg-[var(--color-surface)] border border-[var(--glass-border)] text-xs text-white focus:outline-none focus:border-[var(--color-accent)]"
+                              data-testid="lead-status"
+                            >
                             <option value="">Set status...</option>
                             {LEAD_STATUS_OPTIONS.map((option) => (
                               <option key={option} value={option}>{option}</option>
                             ))}
                           </select>
                           
-                          <Button
-                            onClick={() => handleCallLead(lead.id, lead.phone_number)}
-                            loading={callingLeadId === lead.id}
-                            variant="primary"
-                            size="sm"
-                            disabled={!lead.phone_number}
-                          >
+                            <Button
+                              onClick={() => handleCallLead(lead.id, lead.phone_number)}
+                              loading={callingLeadId === lead.id}
+                              variant="primary"
+                              size="sm"
+                              disabled={!lead.phone_number}
+                              data-testid="lead-call"
+                            >
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                             </svg>
                           </Button>
 
-                          <Button onClick={() => setQuoteLead(lead)} variant="secondary" size="sm">
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
-                          </Button>
+                            <Button onClick={() => setQuoteLead(lead)} variant="secondary" size="sm" data-testid="lead-quote">
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </Button>
 
                           <SmsLead
                             leadId={lead.id}
                             leadName={lead.name}
                             phoneNumber={lead.phone_number}
-                            dialpadToken={dialpadToken}
-                            dialpadUserId={dialpadUserId}
                             onSent={({ sentAt, message }) => {
                               setExtractedLeads((prev) =>
                                 prev.map((l) => l.id === lead.id ? { ...l, last_text_date: sentAt, last_text_body: message } : l)
@@ -1204,11 +1236,12 @@ export default function Dashboard() {
                             }}
                           />
 
-                          <button
-                            onClick={() => handleDeleteLead(lead)}
-                            disabled={deletingLeadId === lead.id}
-                            className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
-                          >
+                            <button
+                              onClick={() => handleDeleteLead(lead)}
+                              disabled={deletingLeadId === lead.id}
+                              className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                              data-testid="lead-delete"
+                            >
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                             </svg>

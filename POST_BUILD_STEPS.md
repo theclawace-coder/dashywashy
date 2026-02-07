@@ -27,7 +27,7 @@ Or view it in your Supabase Dashboard → Edge Functions → `dialpad-webhook`
 Your webhook URL is:
 
 ```
-https://etiaoqskgplpfydblzne.supabase.co/functions/v1/dialpad-webhook
+https://jditayvwnlxktotfybvk.supabase.co/functions/v1/dialpad-webhook
 ```
 
 ## Step 4: Register Webhook with Dialpad
@@ -45,7 +45,7 @@ curl -X POST https://dialpad.com/api/v2/webhooks \
   -H "Authorization: Bearer YOUR_DIALPAD_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "hook_url": "https://etiaoqskgplpfydblzne.supabase.co/functions/v1/dialpad-webhook"
+    "hook_url": "https://jditayvwnlxktotfybvk.supabase.co/functions/v1/dialpad-webhook"
   }'
 ```
 
@@ -58,7 +58,7 @@ $headers = @{
 }
 
 $body = @{
-    hook_url = "https://etiaoqskgplpfydblzne.supabase.co/functions/v1/dialpad-webhook"
+    hook_url = "https://jditayvwnlxktotfybvk.supabase.co/functions/v1/dialpad-webhook"
 } | ConvertTo-Json
 
 $webhook = Invoke-RestMethod -Uri "https://dialpad.com/api/v2/webhooks" -Method Post -Headers $headers -Body $body
@@ -169,7 +169,7 @@ Deploy the `dist` folder to your preferred hosting:
 2. **Check Edge Function logs**: `supabase functions logs dialpad-webhook`
 3. **Test webhook manually**:
    ```bash
-   curl -X POST https://etiaoqskgplpfydblzne.supabase.co/functions/v1/dialpad-webhook \
+  curl -X POST https://jditayvwnlxktotfybvk.supabase.co/functions/v1/dialpad-webhook \
      -H "Content-Type: application/json" \
      -d '{"event_type": "call.ended", "call": {"call_id": "test-123", "direction": "outbound", "duration": 45}}'
    ```
@@ -211,7 +211,7 @@ Deploy the `dist` folder to your preferred hosting:
 ## API Endpoints
 
 ### Webhook Endpoint
-- **URL**: `https://etiaoqskgplpfydblzne.supabase.co/functions/v1/dialpad-webhook`
+- **URL**: `https://jditayvwnlxktotfybvk.supabase.co/functions/v1/dialpad-webhook`
 - **Method**: POST
 - **Events**: `call.ended`, `sms.created`
 

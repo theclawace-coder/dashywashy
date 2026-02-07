@@ -1,5 +1,6 @@
 import Stripe from 'https://esm.sh/stripe@12.18.0?target=deno'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { getOrgIntegration, getOrg } from '../_shared/org-resolver.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -7,35 +8,16 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-const stripeSecret = Deno.env.get('STRIPE_SECRET_KEY') || ''
-const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-
-if (!stripeSecret) {
-  console.error('Missing STRIPE_SECRET_KEY env')
-}
-if (!supabaseUrl || !supabaseServiceKey) {
-  console.error('Missing Supabase env (SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)')
-}
-
-const stripe = new Stripe(stripeSecret, {
-  apiVersion: '2024-06-20',
-})
-
-const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: { autoRefreshToken: false, persistSession: false },
-})
-
-type Payload = {
-  share_token?: string
-  pay_full_amount?: boolean
-}
-
 function jsonResponse(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'Content-Type': 'application/json', ...corsHeaders },
   })
+}
+
+type Payload = {
+  share_token?: string
+  pay_full_amount?: boolean
 }
 
 Deno.serve(async (req) => {
@@ -47,12 +29,16 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Method not allowed' }, 405)
   }
 
-  if (!stripeSecret) {
-    return jsonResponse({ error: 'Stripe not configured' }, 500)
-  }
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+  const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+
   if (!supabaseUrl || !supabaseServiceKey) {
     return jsonResponse({ error: 'Supabase service key missing' }, 500)
   }
+
+  const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  })
 
   let payload: Payload = {}
   try {
@@ -71,7 +57,7 @@ Deno.serve(async (req) => {
     const { data: quote, error } = await supabaseAdmin
       .from('quotes')
       .select(
-        'id, total_inc_gst, deposit_amount, customer_email, customer_name, customer_phone, lead_id, quote_number'
+        'id, org_id, total_inc_gst, deposit_amount, customer_email, customer_name, customer_phone, lead_id, quote_number'
       )
       .eq('share_token', shareToken)
       .single()
@@ -79,6 +65,19 @@ Deno.serve(async (req) => {
     if (error || !quote) {
       return jsonResponse({ error: 'Quote not found' }, 404)
     }
+
+    // Load Stripe key from the quote's org integration
+    const orgId = quote.org_id
+    let stripeSecret = ''
+    if (orgId) {
+      const stripeConfig = await getOrgIntegration(supabaseAdmin, orgId, 'stripe')
+      stripeSecret = stripeConfig.secret_key || ''
+    }
+    if (!stripeSecret) {
+      return jsonResponse({ error: 'Stripe not configured for this organization' }, 500)
+    }
+
+    const stripe = new Stripe(stripeSecret, { apiVersion: '2024-06-20' })
 
     const amountNumber = payFullAmount
       ? Number(quote.total_inc_gst)
@@ -103,6 +102,7 @@ Deno.serve(async (req) => {
         customer_phone: quote.customer_phone || '',
         lead_id: quote.lead_id || '',
         quote_number: quote.quote_number || '',
+        org_id: orgId || '',
       },
     })
 
@@ -118,21 +118,3 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: message }, 500)
   }
 })
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

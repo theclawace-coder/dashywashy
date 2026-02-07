@@ -1,10 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, GET, OPTIONS, DELETE",
-};
+import { resolveOrgFromRequest, getOrgIntegration, corsHeaders, jsonResponse, jsonError } from '../_shared/org-resolver.ts'
 
 type GraphSubscription = {
   id?: string;
@@ -71,20 +66,17 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const tenantId = Deno.env.get("MICROSOFT_TENANT_ID");
-    const clientId = Deno.env.get("MICROSOFT_CLIENT_ID");
-    const clientSecret = Deno.env.get("MICROSOFT_CLIENT_SECRET");
-    const userEmail = Deno.env.get("OUTLOOK_USER_EMAIL");
+    const { orgId, supabaseAdmin } = await resolveOrgFromRequest(req)
+    const outlookConfig = await getOrgIntegration(supabaseAdmin, orgId, 'outlook')
+
+    const tenantId = outlookConfig.tenant_id || ''
+    const clientId = outlookConfig.client_id || ''
+    const clientSecret = outlookConfig.client_secret || ''
+    const userEmail = outlookConfig.user_email || ''
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 
     if (!tenantId || !clientId || !clientSecret || !userEmail) {
-      return new Response(
-        JSON.stringify({ 
-          error: "Missing Microsoft Graph credentials",
-          required: ["MICROSOFT_TENANT_ID", "MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "OUTLOOK_USER_EMAIL"],
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonError("Missing Microsoft Graph credentials in organization integration", 400);
     }
 
     // Get access token
@@ -106,10 +98,7 @@ Deno.serve(async (req: Request) => {
     if (!tokenResponse.ok) {
       const errorText = await tokenResponse.text();
       console.error(`[Setup Webhook] Token error: ${errorText}`);
-      return new Response(
-        JSON.stringify({ error: "Failed to get access token", details: errorText }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonError("Failed to get access token", 500);
     }
 
     const tokenData = await tokenResponse.json();
@@ -123,10 +112,7 @@ Deno.serve(async (req: Request) => {
     if (req.method === "DELETE" || action === "delete") {
       const subscriptionId = body.subscription_id;
       if (!subscriptionId) {
-        return new Response(
-          JSON.stringify({ error: "subscription_id required for delete action" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonError("subscription_id required for delete action", 400);
       }
 
       const deleteResponse = await fetch(
@@ -139,43 +125,30 @@ Deno.serve(async (req: Request) => {
         }
       );
 
-      return new Response(
-        JSON.stringify({ 
-          success: deleteResponse.ok, 
-          status: deleteResponse.status,
-        }),
-        { status: deleteResponse.ok ? 200 : deleteResponse.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonResponse({
+        success: deleteResponse.ok,
+        status: deleteResponse.status,
+      }, deleteResponse.ok ? 200 : deleteResponse.status);
     }
 
     if (action === "list" || req.method === "GET") {
-      // List existing subscriptions
       console.log(`[Setup Webhook] Listing subscriptions`);
       const listResult = await listSubscriptions(token);
 
       if (!listResult.ok) {
         console.error(`[Setup Webhook] List error: ${listResult.errorText}`);
-        return new Response(
-          JSON.stringify({ error: "Failed to list subscriptions", status: 500, details: listResult.errorText }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonError("Failed to list subscriptions", 500);
       }
 
       const subscriptions = listResult.data;
       console.log(`[Setup Webhook] Found ${subscriptions.value?.length || 0} subscriptions`);
-      return new Response(
-        JSON.stringify(subscriptions),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonResponse(subscriptions);
     }
 
     if (action === "create") {
-      // Create a new subscription (idempotent)
-      // Webhook URL for the outlook-webhook function
       const webhookUrl = `${supabaseUrl}/functions/v1/outlook-webhook`;
       const resource = `users/${userEmail}/messages`;
 
-      // Subscription expires in 4230 minutes (maximum for mail messages)
       const expirationDateTime = new Date();
       expirationDateTime.setMinutes(expirationDateTime.getMinutes() + 4230);
       const expirationIso = expirationDateTime.toISOString();
@@ -183,10 +156,7 @@ Deno.serve(async (req: Request) => {
       const listResult = await listSubscriptions(token);
       if (!listResult.ok) {
         console.error(`[Setup Webhook] List error before create: ${listResult.errorText}`);
-        return new Response(
-          JSON.stringify({ error: "Failed to list subscriptions", status: 500, details: listResult.errorText }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonError("Failed to list subscriptions", 500);
       }
 
       const allSubscriptions = (listResult.data?.value || []) as GraphSubscription[];
@@ -217,18 +187,15 @@ Deno.serve(async (req: Request) => {
             console.error(`[Setup Webhook] Failed to renew subscription:`, renewResult.data);
           }
 
-          return new Response(
-            JSON.stringify({
-              success: renewResult.ok,
-              action: "renewed",
-              subscription: renewResult.data,
-              expiresAt: expirationIso,
-              webhookUrl,
-              removedDuplicates: deletedIds.length,
-              removedIds: deletedIds,
-            }),
-            { status: renewResult.ok ? 200 : 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
+          return jsonResponse({
+            success: renewResult.ok,
+            action: "renewed",
+            subscription: renewResult.data,
+            expiresAt: expirationIso,
+            webhookUrl,
+            removedDuplicates: deletedIds.length,
+            removedIds: deletedIds,
+          }, renewResult.ok ? 200 : 500);
         }
       }
 
@@ -264,46 +231,36 @@ Deno.serve(async (req: Request) => {
 
       if (!createResponse.ok) {
         console.error(`[Setup Webhook] Failed to create subscription:`, responseText);
-        return new Response(
-          JSON.stringify({ 
-            error: "Failed to create subscription", 
-            status: createResponse.status,
-            details: responseData,
-            webhookUrl,
-            subscriptionPayload,
-            troubleshooting: {
-              note: "Make sure the webhook endpoint is publicly accessible and returns the validationToken correctly.",
-              checkPermissions: "Verify Azure AD app has Mail.Read and Mail.ReadBasic.All application permissions with admin consent.",
-              checkWebhook: `Test webhook validation: GET ${webhookUrl}?validationToken=test123`,
-            },
-          }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({
+          error: "Failed to create subscription",
+          status: createResponse.status,
+          details: responseData,
+          webhookUrl,
+          subscriptionPayload,
+          troubleshooting: {
+            note: "Make sure the webhook endpoint is publicly accessible and returns the validationToken correctly.",
+            checkPermissions: "Verify Azure AD app has Mail.Read and Mail.ReadBasic.All application permissions with admin consent.",
+            checkWebhook: `Test webhook validation: GET ${webhookUrl}?validationToken=test123`,
+          },
+        }, 500);
       }
 
       console.log(`[Setup Webhook] Subscription created successfully:`, responseText);
-      return new Response(
-        JSON.stringify({
-          success: true,
-          action: "created",
-          subscription: responseData,
-          expiresAt: expirationIso,
-          webhookUrl,
-        }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonResponse({
+        success: true,
+        action: "created",
+        subscription: responseData,
+        expiresAt: expirationIso,
+        webhookUrl,
+      });
     }
 
     if (action === "renew") {
       const subscriptionId = body.subscription_id;
       if (!subscriptionId) {
-        return new Response(
-          JSON.stringify({ error: "subscription_id required for renew action" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonError("subscription_id required for renew action", 400);
       }
 
-      // Extend expiration by 4230 minutes
       const expirationDateTime = new Date();
       expirationDateTime.setMinutes(expirationDateTime.getMinutes() + 4230);
 
@@ -314,48 +271,19 @@ Deno.serve(async (req: Request) => {
         console.error(`[Setup Webhook] Failed to renew subscription:`, renewResponse.data);
       }
 
-      return new Response(
-        JSON.stringify({
-          success: renewResponse.ok,
-          subscription: renewResponse.data,
-          newExpiration: expirationDateTime.toISOString(),
-        }),
-        { status: renewResponse.ok ? 200 : 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonResponse({
+        success: renewResponse.ok,
+        subscription: renewResponse.data,
+        newExpiration: expirationDateTime.toISOString(),
+      }, renewResponse.ok ? 200 : 500);
     }
 
-    return new Response(
-      JSON.stringify({ 
-        error: "Invalid action", 
-        validActions: ["list", "create", "delete", "renew"],
-        usage: {
-          list: "GET or POST with action: 'list'",
-          create: "POST with action: 'create'",
-          delete: "DELETE or POST with action: 'delete', subscription_id: '...'",
-          renew: "POST with action: 'renew', subscription_id: '...'",
-        },
-      }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return jsonError("Invalid action. Valid actions: list, create, delete, renew", 400);
 
   } catch (error) {
     console.error(`[Setup Webhook] Error:`, error);
-    return new Response(
-      JSON.stringify({ error: "Internal server error", details: error.message, stack: error.stack }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    const message = error instanceof Error ? error.message : "Internal server error";
+    const status = message === 'Unauthorized' ? 401 : 500;
+    return jsonError(message, status);
   }
 });
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -6,7 +6,8 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 import { Button, useToast } from './ui'
 import SmsLead from './SmsLead'
 import QuoteTool from './QuoteTool'
@@ -26,15 +27,6 @@ type ExtractedLead = {
   last_text_date?: string | null
   last_text_body?: string | null
 }
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://etiaoqskgplpfydblzne.supabase.co'
-const supabaseAnonKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0aWFvcXNrZ3BscGZ5ZGJsem5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMzI0NzAsImV4cCI6MjA4MjgwODQ3MH0.c-AlsveEx_bxVgEivga3PRrBp5ylY3He9EJXbaa2N2c'
-
-const dialpadUserId = '6452247499866112'
-const dialpadUrl = `https://dialpad.com/api/v2/users/${dialpadUserId}/initiate_call`
-const dialpadToken = 'NNRYnLXqJgkWXePcCG2SGCVzHfuB6kxAqQATPvnmn3x6k5RevHUCPdF8zF8jqXsssuyG67bEALxZH9TACsq4aARA46VL4yZ246Kf'
 
 const STATUSES = ['Unanswered', 'Marketing Loop', 'Follow Up', 'Quote Sent', 'Job Won', 'Not interested', 'Jobs Completed']
 
@@ -79,8 +71,19 @@ function formatRelativeTime(val: string | number | null | undefined): string | n
   return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })
 }
 
+function getLeadDisplayName(lead: ExtractedLead) {
+  const name = lead.name?.trim()
+  if (name) return name
+  const email = lead.email?.trim()
+  if (email) return email
+  const phone = lead.phone_number?.trim()
+  if (phone) return phone
+  return 'Unknown'
+}
+
 export default function SalesFunnel() {
   const { addToast } = useToast()
+  const { currentOrg } = useAuth()
   const [leads, setLeads] = useState<ExtractedLead[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [savingId, setSavingId] = useState<string | null>(null)
@@ -97,9 +100,11 @@ export default function SalesFunnel() {
   const fetchLeads = async () => {
     try {
       setIsLoading(true)
+      if (!currentOrg) return
       const { data, error: leadsError } = await supabase
         .from('extracted_leads')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .order('created_at', { ascending: false })
         .limit(200)
 
@@ -204,12 +209,12 @@ export default function SalesFunnel() {
 
     setCallingLeadId(lead.id)
     try {
-      const response = await fetch(dialpadUrl, {
+      const response = await fetch(`${supabaseUrl}/functions/v1/call-lead`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          accept: 'application/json',
-          authorization: `Bearer ${dialpadToken}`,
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
         },
         body: JSON.stringify({ phone_number: lead.phone_number }),
       })
@@ -227,6 +232,7 @@ export default function SalesFunnel() {
           .from('extracted_leads')
           .update({ first_contact: nowIso })
           .eq('id', lead.id)
+          .eq('org_id', currentOrg!.id)
           .is('first_contact', null)
 
         if (!updateError) {
@@ -255,6 +261,7 @@ export default function SalesFunnel() {
         .from('extracted_leads')
         .delete()
         .eq('id', lead.id)
+        .eq('org_id', currentOrg!.id)
       if (deleteError) throw deleteError
       addToast({ type: 'success', title: 'Lead removed' })
       if (quoteLead?.id === lead.id) setQuoteLead(null)
@@ -271,9 +278,10 @@ export default function SalesFunnel() {
 
   useEffect(() => {
     fetchLeads()
+    if (!currentOrg) return
     const channel = supabase
       .channel('extracted_leads_funnel')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'extracted_leads' }, () => fetchLeads())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id }, () => fetchLeads())
       .subscribe()
 
     return () => {
@@ -460,6 +468,7 @@ export default function SalesFunnel() {
                               ? 'opacity-50 scale-95 rotate-2' 
                               : 'hover:border-[var(--glass-border-hover)] hover:shadow-lg'
                           } ${savingId === lead.id ? 'animate-pulse' : ''}`}
+                          data-testid="funnel-lead-card"
                           style={{
                             background: 'var(--color-surface)',
                             borderColor: 'var(--glass-border)'
@@ -470,7 +479,7 @@ export default function SalesFunnel() {
                             {/* Header */}
                             <div className="flex items-start justify-between gap-2 mb-2">
                               <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium text-white truncate">{lead.name || 'Unknown'}</p>
+                                <p className="text-sm font-medium text-white truncate">{getLeadDisplayName(lead)}</p>
                                 <p className="text-xs text-[var(--color-text-muted)] truncate">
                                   {lead.phone_number || lead.email || '—'}
                                 </p>
@@ -482,6 +491,7 @@ export default function SalesFunnel() {
                                 }}
                                 disabled={deletingId === lead.id}
                                 className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-red-500/20 text-[var(--color-text-muted)] hover:text-red-400 transition-all"
+                                data-testid="funnel-lead-delete"
                               >
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -529,6 +539,7 @@ export default function SalesFunnel() {
                                 variant="primary"
                                 size="sm"
                                 className="flex-1"
+                                data-testid="funnel-lead-call"
                               >
                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
@@ -540,8 +551,6 @@ export default function SalesFunnel() {
                                   leadId={lead.id}
                                   leadName={lead.name}
                                   phoneNumber={lead.phone_number}
-                                  dialpadToken={dialpadToken}
-                                  dialpadUserId={dialpadUserId}
                                   onSent={({ sentAt, message }) => {
                                     setLeads((prev) =>
                                       prev.map((l) =>
@@ -560,6 +569,7 @@ export default function SalesFunnel() {
                                 }}
                                 variant="secondary"
                                 size="sm"
+                                data-testid="funnel-lead-quote"
                               >
                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />

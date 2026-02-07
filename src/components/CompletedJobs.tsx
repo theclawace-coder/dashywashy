@@ -7,25 +7,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { format, formatDistanceToNow } from 'date-fns'
-import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
 import { playSaveSound } from '../lib/sounds'
 import { GlassCard, Button, Badge, useToast, StatCard } from './ui'
 import PaymentReminderSms from './PaymentReminderSms'
 import ReviewReminderSms from './ReviewReminderSms'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://etiaoqskgplpfydblzne.supabase.co'
-const supabaseAnonKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0aWFvcXNrZ3BscGZ5ZGJsem5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMzI0NzAsImV4cCI6MjA4MjgwODQ3MH0.c-AlsveEx_bxVgEivga3PRrBp5ylY3He9EJXbaa2N2c'
-
-const dialpadUserId = '6452247499866112'
-const dialpadToken =
-  'NNRYnLXqJgkWXePcCG2SGCVzHfuB6kxAqQATPvnmn3x6k5RevHUCPdF8zF8jqXsssuyG67bEALxZH9TACsq4aARA46VL4yZ246Kf'
-const dialpadCallUrl = `https://dialpad.com/api/v2/users/${dialpadUserId}/initiate_call`
 const googleReviewUrl =
   import.meta.env.VITE_GOOGLE_REVIEW_URL ||
   'https://g.page/r/CleaningReview'
-
 type PaymentStatus = 'waiting_payment' | 'invoice_sent' | 'paid'
 
 interface BookingSeries {
@@ -106,6 +97,7 @@ type PaymentFilter = 'all' | 'paid' | 'awaiting_payment' | 'past_due'
 type SortOption = 'date_desc' | 'date_asc' | 'name_asc' | 'name_desc' | 'amount_desc' | 'amount_asc'
 
 export default function CompletedJobs() {
+  const { currentOrg } = useAuth()
   const { addToast } = useToast()
   const [rows, setRows] = useState<CompletedRow[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -152,6 +144,7 @@ export default function CompletedJobs() {
       const { data: payLogs, error: payLogsErr } = await supabase
         .from('payment_sms_logs')
         .select('*')
+        .eq('org_id', currentOrg!.id)
         .in('occurrence_id', occurrenceIds)
         .order('sent_at', { ascending: false })
 
@@ -179,6 +172,7 @@ export default function CompletedJobs() {
         const { data: calls } = await supabase
           .from('dialpad_calls')
           .select('created_at, external_number')
+          .eq('org_id', currentOrg!.id)
           .or(`external_number.eq.${phone},external_number.eq.+${phone}`)
           .order('created_at', { ascending: false })
           .limit(1)
@@ -211,6 +205,7 @@ export default function CompletedJobs() {
       const { data, error: occError } = await supabase
         .from('booking_occurrences')
         .select(`*, series:booking_series(*, lead:extracted_leads(*))`)
+        .eq('org_id', currentOrg!.id)
         .eq('status', 'completed')
         .order('start_at', { ascending: false })
         .limit(1000)
@@ -222,6 +217,7 @@ export default function CompletedJobs() {
       const { data: overdueData, error: overdueErr } = await supabase
         .from('booking_occurrences')
         .select(`*, series:booking_series!inner(*, lead:extracted_leads(*))`)
+        .eq('org_id', currentOrg!.id)
         .lte('start_at', nowIso)
         .in('status', ['scheduled', 'skipped'])
         .order('start_at', { ascending: false })
@@ -235,7 +231,7 @@ export default function CompletedJobs() {
 
       const quotesById: Record<string, QuoteRecord> = {}
       if (quoteIds.length) {
-        const { data: quotes } = await supabase.from('quotes').select('id, lead_id, customer_name, customer_email, customer_phone, total_inc_gst, share_token, quote_number, service, accepted_payment_method').in('id', quoteIds)
+        const { data: quotes } = await supabase.from('quotes').select('id, lead_id, customer_name, customer_email, customer_phone, total_inc_gst, share_token, quote_number, service, accepted_payment_method').eq('org_id', currentOrg!.id).in('id', quoteIds)
         if (quotes) {
           for (const quote of quotes as QuoteRecord[]) {
             quotesById[quote.id] = quote
@@ -246,7 +242,7 @@ export default function CompletedJobs() {
       const fallbackLeadIds = Array.from(new Set(allOccurrences.map((occ) => (!occ?.series?.quote_id ? occ?.series?.lead?.id : null)).filter(Boolean))) as string[]
       const latestQuotes: Record<string, QuoteRecord> = {}
       if (fallbackLeadIds.length) {
-        const { data: quotes } = await supabase.from('quotes').select('id, lead_id, customer_name, customer_email, customer_phone, total_inc_gst, share_token, quote_number, service, accepted_payment_method').in('lead_id', fallbackLeadIds).order('created_at', { ascending: false })
+        const { data: quotes } = await supabase.from('quotes').select('id, lead_id, customer_name, customer_email, customer_phone, total_inc_gst, share_token, quote_number, service, accepted_payment_method').eq('org_id', currentOrg!.id).in('lead_id', fallbackLeadIds).order('created_at', { ascending: false })
         if (quotes) {
           for (const quote of quotes as QuoteRecord[]) {
             if (quote.lead_id && !latestQuotes[quote.lead_id]) {
@@ -307,9 +303,13 @@ export default function CompletedJobs() {
     }
     setCallingId(row.occurrence.id)
     try {
-      const response = await fetch(dialpadCallUrl, {
+      const response = await fetch(`${supabaseUrl}/functions/v1/call-lead`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', accept: 'application/json', authorization: `Bearer ${dialpadToken}` },
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+        },
         body: JSON.stringify({ phone_number: phoneNumber }),
       })
       const result = await response.json().catch(() => ({}))
@@ -333,7 +333,7 @@ export default function CompletedJobs() {
   const handleSaveNotes = async (occurrenceId: string, notes: string) => {
     setSavingNotesId(occurrenceId)
     try {
-      const { error: updateError } = await supabase.from('booking_occurrences').update({ notes: notes.trim() || null }).eq('id', occurrenceId)
+      const { error: updateError } = await supabase.from('booking_occurrences').update({ notes: notes.trim() || null }).eq('id', occurrenceId).eq('org_id', currentOrg!.id)
       if (updateError) throw updateError
       updateLocalOccurrence(occurrenceId, { notes: notes.trim() || null })
       addToast({ type: 'success', title: 'Notes saved' })
@@ -357,7 +357,7 @@ export default function CompletedJobs() {
     }
 
     try {
-      const { error: updateError } = await supabase.from('booking_occurrences').update(payload).eq('id', id)
+      const { error: updateError } = await supabase.from('booking_occurrences').update(payload).eq('id', id).eq('org_id', currentOrg!.id)
       if (updateError) throw updateError
       updateLocalOccurrence(id, payload)
       addToast({ type: 'success', title: status === 'paid' ? '✅ Marked as paid!' : 'Status updated' })
@@ -405,6 +405,7 @@ export default function CompletedJobs() {
         .from('booking_occurrences')
         .update({ payment_link: data.url, payment_status: 'invoice_sent', payment_amount_cents: amountCents })
         .eq('id', occurrence.id)
+        .eq('org_id', currentOrg!.id)
 
       if (updateError) throw updateError
 
@@ -470,8 +471,10 @@ export default function CompletedJobs() {
     })
   }, [combinedRows, pastDueRows, paymentFilter, sortBy, getAmountCentsForRow, getDisplayStatus])
 
+  if (!currentOrg) return null
+
   return (
-    <div className="min-h-screen p-6">
+    <div className="min-h-screen p-6" data-tour="payment-tracking">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -654,8 +657,6 @@ export default function CompletedJobs() {
                             occurrenceId={occurrence.id}
                             leadName={lead?.name}
                             phoneNumber={lead?.phone_number || undefined}
-                            dialpadToken={dialpadToken}
-                            dialpadUserId={dialpadUserId}
                             paymentLink={occurrence.payment_link || undefined}
                             quoteLink={quoteShareUrl || undefined}
                             amountCents={amountCents}
@@ -668,8 +669,6 @@ export default function CompletedJobs() {
                             occurrenceId={occurrence.id}
                             leadName={lead?.name}
                             phoneNumber={lead?.phone_number || undefined}
-                            dialpadToken={dialpadToken}
-                            dialpadUserId={dialpadUserId}
                             reviewLink={googleReviewUrl}
                             onSent={() => {
                               addToast({ type: 'success', title: '⭐ Review request sent!' })
