@@ -3,7 +3,6 @@
 // ---------------------------------------------------------------------------
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 
 export interface ChatMessage {
@@ -106,12 +105,7 @@ export function useAiChat(): UseAiChatResult {
       // Add the new user message
       apiMessages.push({ role: 'user', content: content.trim() })
 
-      const { data: { session: currentSession } } = await supabase.auth.getSession()
-      const token = currentSession?.access_token
-
-      if (!token) {
-        throw new Error('Not authenticated')
-      }
+      const token = session.access_token
 
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assistant`,
@@ -190,12 +184,7 @@ export function useAiChat(): UseAiChatResult {
     setError(null)
 
     try {
-      const { data: { session: currentSession } } = await supabase.auth.getSession()
-      const token = currentSession?.access_token
-
-      if (!token) {
-        throw new Error('Not authenticated')
-      }
+      const token = session.access_token
 
       if (!confirmed) {
         // User cancelled

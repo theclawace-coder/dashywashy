@@ -5,8 +5,8 @@ if ($envContent -match 'SUPABASE_ACCESS_TOKEN=(.+)') {
 }
 
 # Deploy AI assistant (includes _shared code automatically)
-# Using --legacy-bundle to avoid Docker requirement
-npx supabase functions deploy ai-assistant --project-ref jditayvwnlxktotfybvk --legacy-bundle
+# Use server-side bundling to avoid Docker dependency
+npx supabase functions deploy ai-assistant --project-ref jditayvwnlxktotfybvk --use-api
 
 # Also deploy quote-email since we updated org-resolver
-npx supabase functions deploy quote-email --project-ref jditayvwnlxktotfybvk --legacy-bundle
+npx supabase functions deploy quote-email --project-ref jditayvwnlxktotfybvk --use-api

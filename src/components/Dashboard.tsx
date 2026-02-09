@@ -5,7 +5,7 @@
  * Everything is cards. Everything responds. Everything feels alive.
  */
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase, supabaseUrl, supabaseAnonKey, type DialpadCall, type DialpadSms, type DialpadEmail } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { playSaveSound } from '../lib/sounds'
@@ -234,6 +234,7 @@ export default function Dashboard() {
   const [callingLeadId, setCallingLeadId] = useState<string | null>(null)
   const [deletingLeadId, setDeletingLeadId] = useState<string | null>(null)
   const [emailWebhookStatus, setEmailWebhookStatus] = useState<EmailWebhookStatus>({ state: 'checking' })
+  const queryOpenRef = useRef(false)
   
   // Encouragement state
   const [encouragement, setEncouragement] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
@@ -516,7 +517,16 @@ export default function Dashboard() {
   const fetchEmailWebhookStatus = useCallback(async () => {
     setEmailWebhookStatus((prev) => ({ ...prev, state: 'checking', message: undefined }))
     try {
-      const response = await fetch(`${supabaseUrl}/functions/v1/setup-outlook-webhook`)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        setEmailWebhookStatus({ state: 'error', message: 'Not authenticated' })
+        return
+      }
+      const response = await fetch(`${supabaseUrl}/functions/v1/setup-outlook-webhook`, {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      })
       if (!response.ok) throw new Error(`Status ${response.status}`)
       const data = await response.json()
       const subscriptions = Array.isArray(data?.value) ? data.value : []
@@ -616,6 +626,88 @@ export default function Dashboard() {
     }
   }, [fetchMetrics, fetchEmailWebhookStatus, currentOrg])
 
+  useEffect(() => {
+    if (!currentOrg) return
+
+    const params = new URLSearchParams(window.location.search)
+    const editQuoteId = params.get('editQuote')?.trim() || ''
+    const leadParam = params.get('lead')?.trim() || ''
+
+    if (!editQuoteId && !leadParam) return
+    if (queryOpenRef.current) return
+    queryOpenRef.current = true
+
+    let cancelled = false
+
+    const scrubParams = () => {
+      params.delete('lead')
+      params.delete('editQuote')
+      const nextUrl = window.location.pathname + (params.toString() ? `?${params.toString()}` : '')
+      window.history.replaceState({}, '', nextUrl)
+    }
+
+    const openQuoteFromParams = async () => {
+      try {
+        let leadId = leadParam || ''
+
+        if (!leadId && editQuoteId) {
+          const { data: quoteRow, error: quoteError } = await supabase
+            .from('quotes')
+            .select('lead_id')
+            .eq('id', editQuoteId)
+            .eq('org_id', currentOrg.id)
+            .single()
+
+          if (quoteError) {
+            console.warn('Failed to resolve quote lead', quoteError)
+          } else if (quoteRow?.lead_id) {
+            leadId = quoteRow.lead_id
+          }
+        }
+
+        if (!leadId) {
+          addToast({ type: 'error', title: 'Quote link invalid', message: 'No lead found for this quote.' })
+          scrubParams()
+          return
+        }
+
+        const existing = extractedLeads.find((lead) => lead.id === leadId)
+        if (existing) {
+          if (!cancelled) setQuoteLead(existing)
+          scrubParams()
+          return
+        }
+
+        const { data: leadRow, error: leadError } = await supabase
+          .from('extracted_leads')
+          .select('*')
+          .eq('id', leadId)
+          .eq('org_id', currentOrg.id)
+          .single()
+
+        if (leadError || !leadRow) {
+          console.warn('Failed to load lead for quote edit', leadError)
+          addToast({ type: 'error', title: 'Lead not found', message: 'Unable to open the quote editor.' })
+          scrubParams()
+          return
+        }
+
+        if (!cancelled) setQuoteLead(leadRow as ExtractedLead)
+        scrubParams()
+      } catch (err) {
+        console.error('Failed to open quote from URL params', err)
+        addToast({ type: 'error', title: 'Quote open failed', message: 'Please try again.' })
+        scrubParams()
+      }
+    }
+
+    openQuoteFromParams()
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentOrg, extractedLeads, addToast])
+
   // Action handlers
   const handleRefresh = () => {
     setIsLoading(true)
@@ -656,6 +748,10 @@ export default function Dashboard() {
   }
 
   const handleUpdateLeadStatus = async (leadId: string, status: string | null, skipBookingPrompt = false) => {
+    if (!currentOrg) {
+      addToast({ type: 'error', title: 'Update failed', message: 'No organization selected' })
+      return
+    }
     const lead = extractedLeads.find((l) => l.id === leadId)
     const previousStatus = lead?.status || ''
 
@@ -668,12 +764,17 @@ export default function Dashboard() {
       setSavingStatusId(leadId)
       setExtractedLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, status: status || null } : l)))
 
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
       const response = await fetch(`${supabaseUrl}/functions/v1/update-lead-status`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg.id,
         },
         body: JSON.stringify({ leadId, status }),
       })
@@ -731,12 +832,17 @@ export default function Dashboard() {
 
     setCallingLeadId(leadId)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
       const response = await fetch(`${supabaseUrl}/functions/v1/call-lead`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg.id,
         },
         body: JSON.stringify({ phone_number: phoneNumber }),
       })

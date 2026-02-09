@@ -8,7 +8,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { playSaveSound } from '../lib/sounds'
-import { GlassCard, Button, Badge, useToast, Input } from './ui'
+import { useAuth } from '../lib/auth'
+import { GlassCard, Button, Badge, useToast, Input, Modal } from './ui'
 
 type AvailabilityBucket = 'Morning' | 'Afternoon' | 'Evening' | 'Night'
 type DayName = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday'
@@ -63,11 +64,16 @@ function defaultAvailability() {
 }
 
 export default function Cleaners() {
+  const { hasRole, currentOrg } = useAuth()
   const { addToast } = useToast()
   const [cleaners, setCleaners] = useState<Cleaner[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [inviteOpen, setInviteOpen] = useState(false)
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [inviteLink, setInviteLink] = useState<string | null>(null)
+  const [inviteExpiry, setInviteExpiry] = useState<string | null>(null)
 
   const selected = useMemo(() => cleaners.find((c) => c.id === selectedId) || null, [cleaners, selectedId])
 
@@ -102,7 +108,16 @@ export default function Cleaners() {
   const fetchCleaners = useCallback(async () => {
     setIsLoading(true)
     try {
-      const { data, error: err } = await supabase.from('cleaners').select('*').order('created_at', { ascending: false }).limit(500)
+      if (!currentOrg?.id) {
+        setCleaners([])
+        return
+      }
+      const { data, error: err } = await supabase
+        .from('cleaners')
+        .select('*')
+        .eq('org_id', currentOrg.id)
+        .order('created_at', { ascending: false })
+        .limit(500)
       if (err) throw err
       setCleaners((data || []) as any)
     } catch (e: any) {
@@ -110,7 +125,7 @@ export default function Cleaners() {
     } finally {
       setIsLoading(false)
     }
-  }, [addToast])
+  }, [addToast, currentOrg?.id])
 
   useEffect(() => {
     fetchCleaners()
@@ -200,6 +215,11 @@ export default function Cleaners() {
   }
 
   const saveCleaner = async () => {
+    if (!currentOrg?.id) {
+      addToast({ type: 'error', title: 'No organization selected', message: 'Please select an organization and try again.' })
+      return
+    }
+
     let rates: any = {}
     try {
       rates = form.ratesText ? JSON.parse(form.ratesText) : {}
@@ -242,11 +262,19 @@ export default function Cleaners() {
     setSaving(true)
     try {
       if (selectedId) {
-        const { error: err } = await supabase.from('cleaners').update(payload).eq('id', selectedId)
+        const { error: err } = await supabase
+          .from('cleaners')
+          .update(payload)
+          .eq('id', selectedId)
+          .eq('org_id', currentOrg.id)
         if (err) throw err
         addToast({ type: 'success', title: '✅ Cleaner updated!' })
       } else {
-        const { data, error: err } = await supabase.from('cleaners').insert(payload).select('id').single()
+        const { data, error: err } = await supabase
+          .from('cleaners')
+          .insert({ ...payload, org_id: currentOrg.id })
+          .select('id')
+          .single()
         if (err) throw err
         if (data?.id) setSelectedId(data.id)
         addToast({ type: 'success', title: '✅ Cleaner added!' })
@@ -264,7 +292,15 @@ export default function Cleaners() {
     if (!selectedId) return
     if (!confirm('Delete this cleaner?')) return
     try {
-      const { error: err } = await supabase.from('cleaners').delete().eq('id', selectedId)
+      if (!currentOrg?.id) {
+        addToast({ type: 'error', title: 'No organization selected', message: 'Please select an organization and try again.' })
+        return
+      }
+      const { error: err } = await supabase
+        .from('cleaners')
+        .delete()
+        .eq('id', selectedId)
+        .eq('org_id', currentOrg.id)
       if (err) throw err
       addToast({ type: 'success', title: 'Cleaner deleted' })
       startNew()
@@ -276,6 +312,37 @@ export default function Cleaners() {
 
   const activeCleaners = cleaners.filter(c => c.active !== false)
   const inactiveCleaners = cleaners.filter(c => c.active === false)
+
+  const createInviteLink = async () => {
+    setInviteLoading(true)
+    const { data, error } = await supabase.functions.invoke('create-cleaner-invite', { body: {} })
+    if (error) {
+      addToast({ type: 'error', title: 'Invite failed', message: error.message })
+      setInviteLoading(false)
+      return
+    }
+    const link = (data as any)?.invite?.invite_url as string | undefined
+    const expiry = (data as any)?.invite?.expires_at as string | undefined
+    if (!link) {
+      addToast({ type: 'error', title: 'Invite failed', message: 'No invite link returned' })
+      setInviteLoading(false)
+      return
+    }
+    setInviteLink(link)
+    setInviteExpiry(expiry || null)
+    setInviteOpen(true)
+    setInviteLoading(false)
+  }
+
+  const copyInviteLink = async () => {
+    if (!inviteLink) return
+    try {
+      await navigator.clipboard.writeText(inviteLink)
+      addToast({ type: 'success', title: 'Link copied', message: 'Invite link copied to clipboard.' })
+    } catch {
+      addToast({ type: 'error', title: 'Copy failed', message: 'Unable to copy link.' })
+    }
+  }
 
   return (
     <div className="min-h-screen p-6">
@@ -294,15 +361,22 @@ export default function Cleaners() {
               </h1>
               <p className="text-caption mt-1">Manage your cleaning team's availability, rates, and details</p>
             </div>
-            <div className="flex items-center gap-4 px-4 py-2 rounded-xl bg-[var(--color-surface)] border border-[var(--glass-border)]">
-              <div className="text-center">
-                <p className="text-2xl font-bold text-white">{activeCleaners.length}</p>
-                <p className="text-[10px] text-[var(--color-text-muted)] uppercase">Active</p>
-              </div>
-              <div className="w-px h-8 bg-[var(--glass-border)]" />
-              <div className="text-center">
-                <p className="text-2xl font-bold text-[var(--color-text-muted)]">{inactiveCleaners.length}</p>
-                <p className="text-[10px] text-[var(--color-text-muted)] uppercase">Inactive</p>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              {hasRole('manager') && (
+                <Button onClick={createInviteLink} loading={inviteLoading} variant="secondary">
+                  Create Invite Link
+                </Button>
+              )}
+              <div className="flex items-center gap-4 px-4 py-2 rounded-xl bg-[var(--color-surface)] border border-[var(--glass-border)]">
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-white">{activeCleaners.length}</p>
+                  <p className="text-[10px] text-[var(--color-text-muted)] uppercase">Active</p>
+                </div>
+                <div className="w-px h-8 bg-[var(--glass-border)]" />
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-[var(--color-text-muted)]">{inactiveCleaners.length}</p>
+                  <p className="text-[10px] text-[var(--color-text-muted)] uppercase">Inactive</p>
+                </div>
               </div>
             </div>
           </div>
@@ -634,6 +708,23 @@ export default function Cleaners() {
           </div>
         </div>
       </div>
+
+      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title="Cleaner Intake Link">
+        <p className="text-sm text-[var(--color-text-secondary)] mb-4">
+          Share this one-time link with a cleaner so they can enter their own details.
+          {inviteExpiry && (
+            <span className="block mt-1 text-xs text-[var(--color-text-muted)]">
+              Expires {new Date(inviteExpiry).toLocaleString()}
+            </span>
+          )}
+        </p>
+        <div className="flex items-center gap-2">
+          <Input value={inviteLink || ''} readOnly />
+          <Button variant="ghost" size="sm" onClick={copyInviteLink}>
+            Copy
+          </Button>
+        </div>
+      </Modal>
     </div>
   )
 }

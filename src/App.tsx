@@ -5,7 +5,7 @@
  * Auth is handled by AuthProvider (src/lib/auth.tsx).
  */
 
-import { useState } from 'react'
+import { useState, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, Outlet, useLocation, useSearchParams } from 'react-router-dom'
 import { useAuth } from './lib/auth'
 
@@ -20,40 +20,56 @@ import OnboardingPage from './pages/onboarding/OnboardingPage'
 
 // Settings pages
 import SettingsLayout from './pages/settings/SettingsLayout'
-import OrgSettingsPage from './pages/settings/OrgSettingsPage'
-import TeamPage from './pages/settings/TeamPage'
-import IntegrationsPage from './pages/settings/IntegrationsPage'
-import AutomationSettingsPage from './pages/settings/AutomationSettingsPage'
-import WorkflowListPage from './pages/settings/WorkflowListPage'
-import WorkflowBuilderPage from './pages/settings/WorkflowBuilderPage'
-import BillingPage from './pages/settings/BillingPage'
 
 // Feature components
 import Dashboard from './components/Dashboard'
-import WebhookDebug from './components/WebhookDebug'
-import QuotePublicView from './components/QuotePublicView'
-import SalesFunnel from './components/SalesFunnel'
-import Calendar from './components/Calendar'
-import CompletedJobs from './components/CompletedJobs'
-import Cleaners from './components/Cleaners'
-import CleanersPayout from './components/CleanersPayout'
-import Dispatch from './components/Dispatch'
-import QuotesSent from './components/QuotesSent'
-import RepeatCustomers from './components/RepeatCustomers'
-import TodoPage from './components/TodoPage'
-import JobModal from './components/JobModal'
 import GlobalSearch from './components/GlobalSearch'
 import MainNav from './components/MainNav'
 import Breadcrumbs from './components/Breadcrumbs'
 import NewLeadNotifier from './components/NewLeadNotifier'
 import MarketingLoopNotifier from './components/MarketingLoopNotifier'
 import ManualTodoPopup from './components/ManualTodoPopup'
-import MarketingLoop from './components/MarketingLoop'
-import BusinessAnalytics from './components/BusinessAnalytics'
 import UserMenu from './components/UserMenu'
 import { GlassCard } from './components/ui'
-import TourController from './components/TourController'
-import AiChatPanel from './components/ai/AiChatPanel'
+
+const QuotePublicView = lazy(() => import('./components/QuotePublicView'))
+const SalesFunnel = lazy(() => import('./components/SalesFunnel'))
+const Calendar = lazy(() => import('./components/Calendar'))
+const Dispatch = lazy(() => import('./components/Dispatch'))
+const Cleaners = lazy(() => import('./components/Cleaners'))
+const CleanersPayout = lazy(() => import('./components/CleanersPayout'))
+const CompletedJobs = lazy(() => import('./components/CompletedJobs'))
+const QuotesSent = lazy(() => import('./components/QuotesSent'))
+const RepeatCustomers = lazy(() => import('./components/RepeatCustomers'))
+const TodoPage = lazy(() => import('./components/TodoPage'))
+const MarketingLoop = lazy(() => import('./components/MarketingLoop'))
+const BusinessAnalytics = lazy(() => import('./components/BusinessAnalytics'))
+const WebhookDebug = lazy(() => import('./components/WebhookDebug'))
+
+const OrgSettingsPage = lazy(() => import('./pages/settings/OrgSettingsPage'))
+const TeamPage = lazy(() => import('./pages/settings/TeamPage'))
+const IntegrationsPage = lazy(() => import('./pages/settings/IntegrationsPage'))
+const AutomationSettingsPage = lazy(() => import('./pages/settings/AutomationSettingsPage'))
+const WorkflowListPage = lazy(() => import('./pages/settings/WorkflowListPage'))
+const WorkflowBuilderPage = lazy(() => import('./pages/settings/WorkflowBuilderPage'))
+const BillingPage = lazy(() => import('./pages/settings/BillingPage'))
+const CleanerInvitePage = lazy(() => import('./pages/cleaners/CleanerInvitePage'))
+
+const TourController = lazy(() => import('./components/TourController'))
+const JobModal = lazy(() => import('./components/JobModal'))
+const AiChatPanel = lazy(() => import('./components/ai/AiChatPanel'))
+
+function FullScreenSpinner() {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="w-8 h-8 border-2 border-[var(--color-accent)] border-t-transparent rounded-full animate-spin" />
+    </div>
+  )
+}
+
+function withSuspense(node: React.ReactNode, fallback?: React.ReactNode) {
+  return <Suspense fallback={fallback ?? <FullScreenSpinner />}>{node}</Suspense>
+}
 
 // ---------------------------------------------------------------------------
 // Breadcrumbs helper
@@ -165,7 +181,7 @@ function QuotePublicWrapper() {
 
   return (
     <div className="min-h-screen">
-      <QuotePublicView shareToken={shareToken} />
+      {withSuspense(<QuotePublicView shareToken={shareToken} />)}
     </div>
   )
 }
@@ -276,7 +292,7 @@ function AppLayout() {
     <div className="app-shell">
       <UserMenu />
       <MainNav />
-      <TourController />
+      {withSuspense(<TourController />, null)}
 
       <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-2">
         <Breadcrumbs items={breadcrumbs} />
@@ -289,8 +305,8 @@ function AppLayout() {
 
       <Outlet />
 
-      <JobModal />
-      <AiChatPanel />
+      {withSuspense(<JobModal />, null)}
+      {withSuspense(<AiChatPanel />, null)}
     </div>
   )
 }
@@ -316,7 +332,7 @@ function DashboardPage() {
               >
                 Close
               </button>
-              <WebhookDebug />
+              {withSuspense(<WebhookDebug />, <div className="p-4 text-sm text-[var(--color-text-muted)]">Loading logs…</div>)}
             </div>
           </div>
         </div>
@@ -345,6 +361,7 @@ function App() {
       <Route path="/auth/signup" element={<SignupPage />} />
       <Route path="/auth/invite/:token" element={<AcceptInvitePage />} />
       <Route path="/auth/callback" element={<AuthCallbackPage />} />
+      <Route path="/cleaners/invite/:token" element={withSuspense(<CleanerInvitePage />)} />
       <Route path="/payment-success" element={<PaymentStatus success={true} />} />
       <Route path="/payment-cancel" element={<PaymentStatus success={false} />} />
       <Route path="/quote" element={<QuotePublicWrapper />} />
@@ -362,26 +379,26 @@ function App() {
       {/* Protected routes (need auth + org) */}
       <Route element={<RequireAuth />}>
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/salesfunnel" element={<SalesFunnel />} />
-        <Route path="/calendar" element={<Calendar />} />
-        <Route path="/dispatch" element={<Dispatch />} />
-        <Route path="/cleaners" element={<Cleaners />} />
-        <Route path="/cleaners-payout" element={<CleanersPayout />} />
-        <Route path="/completed" element={<CompletedJobs />} />
-        <Route path="/completed-jobs" element={<CompletedJobs />} />
-        <Route path="/quotes-sent" element={<QuotesSent />} />
-        <Route path="/repeat-customers" element={<RepeatCustomers />} />
-        <Route path="/todo" element={<TodoPage />} />
-        <Route path="/marketing-loop" element={<MarketingLoop />} />
-        <Route path="/analytics" element={<BusinessAnalytics />} />
-        <Route path="/settings" element={<SettingsLayout><OrgSettingsPage /></SettingsLayout>} />
-        <Route path="/settings/team" element={<SettingsLayout><TeamPage /></SettingsLayout>} />
-        <Route path="/settings/integrations" element={<SettingsLayout><IntegrationsPage /></SettingsLayout>} />
-        <Route path="/settings/automations" element={<SettingsLayout><AutomationSettingsPage /></SettingsLayout>} />
-        <Route path="/settings/workflows" element={<SettingsLayout><WorkflowListPage /></SettingsLayout>} />
-        <Route path="/settings/workflows/new" element={<SettingsLayout><WorkflowBuilderPage /></SettingsLayout>} />
-        <Route path="/settings/workflows/:id" element={<SettingsLayout><WorkflowBuilderPage /></SettingsLayout>} />
-        <Route path="/settings/billing" element={<SettingsLayout><BillingPage /></SettingsLayout>} />
+        <Route path="/salesfunnel" element={withSuspense(<SalesFunnel />)} />
+        <Route path="/calendar" element={withSuspense(<Calendar />)} />
+        <Route path="/dispatch" element={withSuspense(<Dispatch />)} />
+        <Route path="/cleaners" element={withSuspense(<Cleaners />)} />
+        <Route path="/cleaners-payout" element={withSuspense(<CleanersPayout />)} />
+        <Route path="/completed" element={withSuspense(<CompletedJobs />)} />
+        <Route path="/completed-jobs" element={withSuspense(<CompletedJobs />)} />
+        <Route path="/quotes-sent" element={withSuspense(<QuotesSent />)} />
+        <Route path="/repeat-customers" element={withSuspense(<RepeatCustomers />)} />
+        <Route path="/todo" element={withSuspense(<TodoPage />)} />
+        <Route path="/marketing-loop" element={withSuspense(<MarketingLoop />)} />
+        <Route path="/analytics" element={withSuspense(<BusinessAnalytics />)} />
+        <Route path="/settings" element={<SettingsLayout>{withSuspense(<OrgSettingsPage />)}</SettingsLayout>} />
+        <Route path="/settings/team" element={<SettingsLayout>{withSuspense(<TeamPage />)}</SettingsLayout>} />
+        <Route path="/settings/integrations" element={<SettingsLayout>{withSuspense(<IntegrationsPage />)}</SettingsLayout>} />
+        <Route path="/settings/automations" element={<SettingsLayout>{withSuspense(<AutomationSettingsPage />)}</SettingsLayout>} />
+        <Route path="/settings/workflows" element={<SettingsLayout>{withSuspense(<WorkflowListPage />)}</SettingsLayout>} />
+        <Route path="/settings/workflows/new" element={<SettingsLayout>{withSuspense(<WorkflowBuilderPage />)}</SettingsLayout>} />
+        <Route path="/settings/workflows/:id" element={<SettingsLayout>{withSuspense(<WorkflowBuilderPage />)}</SettingsLayout>} />
+        <Route path="/settings/billing" element={<SettingsLayout>{withSuspense(<BillingPage />)}</SettingsLayout>} />
       </Route>
 
       {/* Catch-all */}

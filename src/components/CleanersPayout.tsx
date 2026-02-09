@@ -14,6 +14,7 @@ import {
 } from 'date-fns'
 import { supabase } from '../lib/supabase'
 import { playSaveSound } from '../lib/sounds'
+import { useAuth } from '../lib/auth'
 import { GlassCard, Button, Badge } from './ui'
 
 interface BookingOccurrence {
@@ -72,6 +73,7 @@ type FilterOption = 'all' | 'paid' | 'unpaid'
 type PeriodType = 'day' | 'week' | 'month'
 
 export default function CleanersPayout() {
+  const { currentOrg } = useAuth()
   const [rows, setRows] = useState<PayoutRow[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -85,6 +87,11 @@ export default function CleanersPayout() {
   const [cleanerSearch, setCleanerSearch] = useState<string>('')
 
   const fetchData = useCallback(async () => {
+    if (!currentOrg) {
+      setRows([])
+      setIsLoading(false)
+      return
+    }
     setIsLoading(true)
     setError(null)
     try {
@@ -94,6 +101,7 @@ export default function CleanersPayout() {
       const { data: occurrences, error: occError } = await supabase
         .from('booking_occurrences')
         .select(`*, series:booking_series(id, lead_id, quote_id, title)`)
+        .eq('org_id', currentOrg.id)
         .eq('status', 'completed')
         .not('cleaner_id', 'is', null)
         .order('start_at', { ascending: false })
@@ -105,6 +113,7 @@ export default function CleanersPayout() {
       const { data: overdueData, error: overdueErr } = await supabase
         .from('booking_occurrences')
         .select(`*, series:booking_series!inner(id, lead_id, quote_id, title)`)
+        .eq('org_id', currentOrg.id)
         .lt('start_at', nowIso)
         .in('status', ['scheduled', 'skipped'])
         .not('cleaner_id', 'is', null)
@@ -135,6 +144,7 @@ export default function CleanersPayout() {
         const { data: cleaners, error: cleanersError } = await supabase
           .from('cleaners')
           .select('id, full_name')
+          .eq('org_id', currentOrg.id)
           .in('id', cleanerIds)
 
         if (cleanersError) throw cleanersError
@@ -151,6 +161,7 @@ export default function CleanersPayout() {
         const { data: quotes, error: quotesError } = await supabase
           .from('quotes')
           .select('id, total_inc_gst, customer_name, cleaner_pay, share_token')
+          .eq('org_id', currentOrg.id)
           .in('id', quoteIds)
 
         if (quotesError) throw quotesError
@@ -166,6 +177,7 @@ export default function CleanersPayout() {
       const { data: payouts, error: payoutsError } = await supabase
         .from('cleaner_payouts')
         .select('*')
+        .eq('org_id', currentOrg.id)
         .in('occurrence_id', occurrenceIds)
 
       if (payoutsError) throw payoutsError
@@ -183,6 +195,7 @@ export default function CleanersPayout() {
         cleaner_id: string
         job_total: number
         payout_amount: number
+        org_id: string
       }> = []
 
       const mappedRows: PayoutRow[] = allOccurrences.map((occ: any) => {
@@ -202,6 +215,7 @@ export default function CleanersPayout() {
             cleaner_id: cleanerId,
             job_total: jobTotal,
             payout_amount: defaultPayout,
+            org_id: currentOrg.id,
           })
         }
 
@@ -225,6 +239,7 @@ export default function CleanersPayout() {
           const { data: newPayouts, error: refetchError } = await supabase
             .from('cleaner_payouts')
             .select('*')
+            .eq('org_id', currentOrg.id)
             .in('occurrence_id', rowsToCreate.map((r) => r.occurrence_id))
 
           if (!refetchError && newPayouts) {
@@ -261,7 +276,7 @@ export default function CleanersPayout() {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [currentOrg])
 
   useEffect(() => {
     fetchData()
@@ -282,6 +297,7 @@ export default function CleanersPayout() {
         .from('cleaner_payouts')
         .update({ payout_amount: payoutAmount })
         .eq('id', row.payout.id)
+        .eq('org_id', currentOrg.id)
 
       if (updateError) throw updateError
 
@@ -330,6 +346,7 @@ export default function CleanersPayout() {
           paid_by: isPaid ? null : 'admin',
         })
         .eq('id', row.payout.id)
+        .eq('org_id', currentOrg.id)
 
       if (updateError) throw updateError
 
@@ -435,6 +452,8 @@ export default function CleanersPayout() {
       currency: 'AUD',
     }).format(amount)
   }
+
+  if (!currentOrg) return null
 
   return (
     <div className="min-h-screen p-4 md:p-6 lg:p-8">
@@ -898,7 +917,7 @@ export default function CleanersPayout() {
                       <div className="flex flex-wrap gap-2 pt-2">
                         {quote?.share_token && (
                           <a
-                            href={`${window.location.origin}?quote=${quote.share_token}`}
+                            href={`${window.location.origin}/quote?quote=${quote.share_token}`}
                             target="_blank"
                             rel="noreferrer"
                             className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white text-sm border border-white/10"
@@ -928,4 +947,3 @@ export default function CleanersPayout() {
     </div>
   )
 }
-

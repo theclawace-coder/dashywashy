@@ -368,7 +368,7 @@ export default function QuotesSent() {
                         {/* Quick Actions */}
                         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                           {quote.share_token && (
-                            <a href={`${window.location.origin}?quote=${quote.share_token}`} target="_blank" rel="noreferrer">
+                            <a href={`${window.location.origin}/quote?quote=${quote.share_token}`} target="_blank" rel="noreferrer">
                               <Button variant="ghost" size="sm" title="View quote">
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
@@ -412,7 +412,7 @@ export default function QuotesSent() {
                             title="Copy link"
                             onClick={async () => {
                               if (!quote.share_token) return
-                              const url = `${window.location.origin}?quote=${quote.share_token}`
+                              const url = `${window.location.origin}/quote?quote=${quote.share_token}`
                               try {
                                 await navigator.clipboard.writeText(url)
                                 addToast({ type: 'success', title: 'Link copied!' })

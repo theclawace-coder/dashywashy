@@ -41,6 +41,14 @@ type QuoteRow = {
   customer_phone?: string | null
   customer_email?: string | null
   created_at?: string
+  organization?: {
+    business_name?: string | null
+    business_operating_name?: string | null
+    business_abn?: string | null
+    bank_account_name?: string | null
+    bank_bsb?: string | null
+    bank_account_number?: string | null
+  } | null
 }
 
 type QuotePublicViewProps = {
@@ -201,8 +209,12 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
       if (!response.ok || !data?.quote) {
         throw new Error(data?.error || 'Could not record acceptance')
       }
-      setQuote(data.quote as QuoteRow)
-      return data.quote as QuoteRow
+      const nextQuote = data.quote as QuoteRow
+      setQuote((prev) => ({
+        ...(nextQuote || prev || {}),
+        organization: nextQuote?.organization ?? prev?.organization ?? null,
+      }))
+      return nextQuote
     } catch (err) {
       console.error('Accept failed', err)
       setInfoMessage('Could not record acceptance. Please try again.')
@@ -249,8 +261,8 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
         },
         body: JSON.stringify({
           share_token: shareToken,
-          success_url: `${window.location.origin}?quote=${shareToken}&payment_status=success`,
-          cancel_url: `${window.location.origin}?quote=${shareToken}&payment_status=cancelled`,
+          success_url: `${window.location.origin}/quote?quote=${shareToken}&payment_status=success`,
+          cancel_url: `${window.location.origin}/quote?quote=${shareToken}&payment_status=cancelled`,
         }),
       })
 
@@ -271,11 +283,21 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
 
   const handleCopyBankDetails = () => {
     if (!quote) return
+    const org = quote.organization
+    const bankAccountName = org?.bank_account_name?.trim() || ''
+    const bankBsb = org?.bank_bsb?.trim() || ''
+    const bankAccountNumber = org?.bank_account_number?.trim() || ''
+
+    if (!bankAccountName || !bankBsb || !bankAccountNumber) {
+      setInfoMessage('Bank details are not available yet. Please contact the business for payment info.')
+      return
+    }
+
     const text = [
       'Pay via direct transfer:',
-      'Account Name: LITTLEFISH AU PTY LTD',
-      'BSB: 062692',
-      'Account: 82781125',
+      `Account Name: ${bankAccountName}`,
+      `BSB: ${bankBsb}`,
+      `Account: ${bankAccountNumber}`,
       `Reference: ${quote.quote_number || 'Quote number'}`,
     ].join('\n')
     navigator.clipboard
@@ -300,11 +322,21 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
     )
   }
 
+  const org = quote.organization
+  const businessName = org?.business_operating_name || org?.business_name || 'Cleaning Service'
+  const entityName = org?.business_name || businessName
+  const businessOperatingName = org?.business_operating_name || org?.business_name || '—'
+  const businessAbn = org?.business_abn || ''
+  const bankAccountName = org?.bank_account_name?.trim() || ''
+  const bankBsb = org?.bank_bsb?.trim() || ''
+  const bankAccountNumber = org?.bank_account_number?.trim() || ''
+  const hasBankDetails = Boolean(bankAccountName && bankBsb && bankAccountNumber)
+
   return (
     <div className="min-h-screen p-6 text-white">
       <div className="max-w-3xl mx-auto space-y-4 bg-[var(--color-surface)] border border-white/10 rounded-2xl p-6">
         <div className="space-y-1">
-          <p className="text-[11px] uppercase text-[var(--color-text-muted)] tracking-[0.15em]">Sydney Premium Cleaning</p>
+          <p className="text-[11px] uppercase text-[var(--color-text-muted)] tracking-[0.15em]">{businessName}</p>
           <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-3xl font-semibold text-white">Cleaning Quote {quote.quote_number ? `· ${quote.quote_number}` : ''}</h1>
             {quote.accepted_payment_method === 'card_paid' && (
@@ -409,19 +441,23 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
 
         <div className="p-3 rounded-lg border border-white/10 bg-black/15 space-y-2">
           <h3 className="font-semibold text-white">Payment & compliance</h3>
-          <p className="text-sm text-[var(--color-text-muted)]">Entity: LITTLEFISH AU PTY LTD</p>
-          <p className="text-sm text-[var(--color-text-muted)]">Business Name: LITTLEFISH AU PTY LTD</p>
-          <p className="text-sm text-[var(--color-text-muted)]">ABN: 95 675 300 875</p>
+          <p className="text-sm text-[var(--color-text-muted)]">Entity: {entityName}</p>
+          <p className="text-sm text-[var(--color-text-muted)]">Business Name: {businessOperatingName}</p>
+          {businessAbn && <p className="text-sm text-[var(--color-text-muted)]">ABN: {businessAbn}</p>}
           <p className="text-sm text-[var(--color-text-muted)]">Reference: {quote.quote_number || 'Use quote number'}</p>
           <div className="text-xs text-[var(--color-text-muted)] pt-1">
-            Bank: BSB 062692 · Account 82781125 · Account Name: LITTLEFISH AU PTY LTD
-            <button
-              onClick={handleCopyBankDetails}
-              className="ml-2 text-emerald-300 underline text-[11px]"
-              type="button"
-            >
-              Copy bank details
-            </button>
+            {hasBankDetails
+              ? `Bank: BSB ${bankBsb} | Account ${bankAccountNumber} | Account Name: ${bankAccountName}`
+              : 'Bank details will be provided upon acceptance.'}
+            {hasBankDetails && (
+              <button
+                onClick={handleCopyBankDetails}
+                className="ml-2 text-emerald-300 underline text-[11px]"
+                type="button"
+              >
+                Copy bank details
+              </button>
+            )}
           </div>
           {quote.accepted_at ? (
             <div className="space-y-3">
@@ -512,11 +548,10 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
         </div>
 
         <p className="text-xs text-[var(--color-text-muted)]">
-          Generated by Sydney Premium Cleaning. For questions, reply to this email or call us.
+          Generated by {businessName}. For questions, reply to this email or call us.
         </p>
       </div>
 
     </div>
   )
 }
-

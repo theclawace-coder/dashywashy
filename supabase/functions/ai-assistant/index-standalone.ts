@@ -439,6 +439,122 @@ interface RequestPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Phone helpers
+// ---------------------------------------------------------------------------
+
+function normalizePhoneToE164AU(input: unknown): string | undefined {
+  if (typeof input !== 'string') return undefined
+  const raw = input.trim()
+  if (!raw) return undefined
+
+  // Keep only digits and an optional leading "+" (drop spaces/brackets/dashes etc.)
+  let compact = raw.replace(/[^\d+]/g, '')
+
+  // Convert international dialing prefix (00...) to +...
+  if (compact.startsWith('00')) {
+    compact = '+' + compact.slice(2)
+  }
+
+  // +<digits>
+  if (compact.startsWith('+')) {
+    const digits = compact.slice(1).replace(/\D/g, '')
+    if (!digits) return undefined
+
+    // Common user mistake: +6104... / +6102... -> +614... / +612...
+    const fixedDigits = digits.startsWith('610') ? `61${digits.slice(3)}` : digits
+    if (fixedDigits.length < 8 || fixedDigits.length > 15) return undefined
+    return `+${fixedDigits}`
+  }
+
+  const digitsOnly = compact.replace(/\D/g, '')
+  if (!digitsOnly) return undefined
+
+  // Already includes AU country code without +
+  if (digitsOnly.startsWith('61')) {
+    if (digitsOnly.length < 8 || digitsOnly.length > 15) return undefined
+    return `+${digitsOnly}`
+  }
+
+  // AU national format (e.g. 0412345678, 0212345678) -> +61...
+  if (digitsOnly.startsWith('0') && digitsOnly.length === 10) {
+    return `+61${digitsOnly.slice(1)}`
+  }
+
+  // AU mobile without the leading 0 (e.g. 412345678) -> +614...
+  if (digitsOnly.startsWith('4') && digitsOnly.length === 9) {
+    return `+61${digitsOnly}`
+  }
+
+  // Unrecognized format; let callers decide whether to keep raw input.
+  return undefined
+}
+
+function formatCurrencyAUD(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return 'N/A'
+  return `$${Number(value).toFixed(2)}`
+}
+
+function formatAmountCents(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return ''
+  return `$${(Number(value) / 100).toFixed(2)}`
+}
+
+function getSiteUrl(): string {
+  return (
+    Deno.env.get('SITE_URL') ||
+    Deno.env.get('PUBLIC_SITE_URL') ||
+    Deno.env.get('APP_URL') ||
+    'http://localhost:5173'
+  )
+}
+
+function buildQuoteShareUrl(shareToken: string): string {
+  const base = getSiteUrl()
+  try {
+    const url = new URL(base)
+    url.searchParams.set('quote', shareToken)
+    return url.toString()
+  } catch {
+    const trimmed = base.endsWith('/') ? base.slice(0, -1) : base
+    return `${trimmed}?quote=${shareToken}`
+  }
+}
+
+function getReviewLink(): string {
+  return (
+    Deno.env.get('GOOGLE_REVIEW_URL') ||
+    Deno.env.get('REVIEW_URL') ||
+    'https://g.page/r/CleaningReview'
+  )
+}
+
+function fillTemplate(body: string, replacements: Record<string, string>): string {
+  let output = body
+  for (const [key, value] of Object.entries(replacements)) {
+    output = output.replace(new RegExp(`{{\\s*${key}\\s*}}`, 'gi'), value)
+  }
+  return output
+}
+
+function repeatTypeToRRule(repeatType: string | undefined): string | null {
+  switch (repeatType) {
+    case 'weekly':
+      return 'FREQ=WEEKLY;INTERVAL=1'
+    case 'fortnightly':
+      return 'FREQ=WEEKLY;INTERVAL=2'
+    case '3-weekly':
+      return 'FREQ=WEEKLY;INTERVAL=3'
+    case 'monthly':
+      return 'FREQ=MONTHLY;INTERVAL=1'
+    case '2-monthly':
+      return 'FREQ=MONTHLY;INTERVAL=2'
+    case 'none':
+      return null
+    default:
+      return null
+  }
+}
+// ---------------------------------------------------------------------------
 // Tool Definitions for OpenAI Function Calling
 // ---------------------------------------------------------------------------
 
@@ -499,7 +615,7 @@ const QUERY_TOOLS = [
           },
           status: {
             type: 'string',
-            enum: ['Inquiry', 'Quoted', 'Quote Sent', 'Quote Accepted', 'Booking Confirmed', 'Marketing Loop', 'Lost', 'DNQ', 'No Further Contact'],
+            enum: ['Unanswered', 'Marketing Loop', 'Follow Up', 'Quote Sent', 'Job Won', 'Jobs Completed', 'Not interested'],
             description: 'Filter by lead status'
           },
           limit: {
@@ -654,6 +770,79 @@ const QUERY_TOOLS = [
         required: []
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_quote_share_link',
+      description: 'Get the public share link for a quote.',
+      parameters: {
+        type: 'object',
+        properties: {
+          quoteId: {
+            type: 'string',
+            description: 'Quote ID if known'
+          },
+          quoteNumber: {
+            type: 'string',
+            description: 'Quote number if known'
+          },
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the quote'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_todos',
+      description: 'Fetch manual todos.',
+      parameters: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: ['pending', 'completed', 'all'],
+            description: 'Filter by completion status'
+          },
+          limit: {
+            type: 'number',
+            description: 'Maximum results (default 50)'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_cleaner_payouts',
+      description: 'Fetch cleaner payouts (paid/unpaid).',
+      parameters: {
+        type: 'object',
+        properties: {
+          cleanerName: {
+            type: 'string',
+            description: 'Cleaner name to filter'
+          },
+          status: {
+            type: 'string',
+            enum: ['paid', 'unpaid', 'all'],
+            description: 'Payout status filter'
+          },
+          limit: {
+            type: 'number',
+            description: 'Maximum results (default 50)'
+          }
+        },
+        required: []
+      }
+    }
   }
 ]
 
@@ -697,7 +886,7 @@ const ACTION_TOOLS = [
           },
           phoneNumber: {
             type: 'string',
-            description: 'Phone number if known'
+            description: 'Phone number if known (will be normalised to E.164; AU mobile example: +61412345678)'
           },
           message: {
             type: 'string',
@@ -785,7 +974,7 @@ const ACTION_TOOLS = [
           },
           newStatus: {
             type: 'string',
-            enum: ['Inquiry', 'Quoted', 'Quote Sent', 'Quote Accepted', 'Booking Confirmed', 'Marketing Loop', 'Lost', 'DNQ', 'No Further Contact'],
+            enum: ['Unanswered', 'Marketing Loop', 'Follow Up', 'Quote Sent', 'Job Won', 'Jobs Completed', 'Not interested'],
             description: 'New status for the lead'
           }
         },
@@ -808,7 +997,7 @@ const ACTION_TOOLS = [
           },
           phone: {
             type: 'string',
-            description: 'Phone number (Australian format preferred, e.g., 0412345678 or +61412345678)'
+            description: 'Phone number (will be saved in E.164; AU mobile example: +61412345678; local example: 0412345678)'
           },
           email: {
             type: 'string',
@@ -820,8 +1009,8 @@ const ACTION_TOOLS = [
           },
           status: {
             type: 'string',
-            enum: ['Inquiry', 'Quoted', 'Quote Sent', 'Quote Accepted', 'Booking Confirmed', 'Marketing Loop', 'Lost', 'DNQ', 'No Further Contact'],
-            description: 'Initial status (default: Inquiry)'
+            enum: ['Unanswered', 'Marketing Loop', 'Follow Up', 'Quote Sent', 'Job Won', 'Jobs Completed', 'Not interested'],
+            description: 'Initial status (default: Unanswered)'
           }
         },
         required: ['name']
@@ -963,7 +1152,7 @@ const ACTION_TOOLS = [
           },
           phoneNumber: {
             type: 'string',
-            description: 'Phone number if known'
+            description: 'Phone number if known (will be normalised to E.164; AU mobile example: +61412345678)'
           }
         },
         required: []
@@ -986,6 +1175,14 @@ const ACTION_TOOLS = [
           quoteId: {
             type: 'string',
             description: 'Quote ID to create payment link for'
+          },
+          occurrenceId: {
+            type: 'string',
+            description: 'Booking occurrence ID to create payment link for'
+          },
+          jobDate: {
+            type: 'string',
+            description: 'Date of booking (YYYY-MM-DD) if occurrenceId not known'
           },
           amountDollars: {
             type: 'number',
@@ -1153,7 +1350,7 @@ const ACTION_TOOLS = [
           },
           newPhone: {
             type: 'string',
-            description: 'New phone number'
+            description: 'New phone number (will be saved in E.164; AU mobile example: +61412345678)'
           },
           newEmail: {
             type: 'string',
@@ -1192,6 +1389,24 @@ const ACTION_TOOLS = [
             type: 'string',
             description: 'Quote ID if known'
           },
+          service: {
+            type: 'string',
+            enum: ['general', 'deep', 'move'],
+            description: 'Update service type'
+          },
+          bedrooms: {
+            type: 'number',
+            description: 'Update number of bedrooms'
+          },
+          bathrooms: {
+            type: 'number',
+            description: 'Update number of bathrooms'
+          },
+          setAddons: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Replace add-ons with this list'
+          },
           addAddons: {
             type: 'array',
             items: { type: 'string' },
@@ -1202,17 +1417,69 @@ const ACTION_TOOLS = [
             items: { type: 'string' },
             description: 'Add-ons to remove'
           },
+          customAddons: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                price: { type: 'number' }
+              }
+            },
+            description: 'Replace custom add-ons with this list'
+          },
           newDiscountPercentage: {
             type: 'number',
             description: 'New discount percentage (0-100)'
+          },
+          newDepositPercentage: {
+            type: 'number',
+            description: 'New deposit percentage (0-100)'
+          },
+          newHourlyRate: {
+            type: 'number',
+            description: 'Override customer hourly rate'
+          },
+          newCleanerRate: {
+            type: 'number',
+            description: 'Override cleaner hourly rate'
+          },
+          newCleanerRateType: {
+            type: 'string',
+            enum: ['hour', 'job'],
+            description: 'Cleaner pay type'
           },
           newAddress: {
             type: 'string',
             description: 'New service address'
           },
+          newAddressLat: {
+            type: 'number',
+            description: 'Latitude for new address'
+          },
+          newAddressLng: {
+            type: 'number',
+            description: 'Longitude for new address'
+          },
           newNotes: {
             type: 'string',
             description: 'New internal notes'
+          },
+          newDescription: {
+            type: 'string',
+            description: 'New quote description/summary'
+          },
+          newCustomerName: {
+            type: 'string',
+            description: 'Update customer name on the quote'
+          },
+          newCustomerEmail: {
+            type: 'string',
+            description: 'Update customer email on the quote'
+          },
+          newCustomerPhone: {
+            type: 'string',
+            description: 'Update customer phone on the quote'
           }
         },
         required: []
@@ -1282,6 +1549,921 @@ const ACTION_TOOLS = [
             description: 'Notes to append to existing notes'
           }
         },
+        required: []
+      }
+    }
+  },
+  // === LEAD & QUOTE ACTIONS ===
+  {
+    type: 'function',
+    function: {
+      name: 'extract_lead_info',
+      description: 'Extract lead details from a specific email and save them to the CRM. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          emailId: {
+            type: 'string',
+            description: 'Email ID from communications log'
+          },
+          fromEmail: {
+            type: 'string',
+            description: 'Filter by sender email if emailId not known'
+          },
+          subjectContains: {
+            type: 'string',
+            description: 'Filter by email subject if emailId not known'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_lead',
+      description: 'Delete a lead/customer from the CRM. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the lead'
+          },
+          leadId: {
+            type: 'string',
+            description: 'Lead ID if known'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_lead_sms',
+      description: 'Send an SMS to a lead using a saved template or a custom message. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customerName: {
+            type: 'string',
+            description: 'Customer/lead name'
+          },
+          leadId: {
+            type: 'string',
+            description: 'Lead ID if known'
+          },
+          phoneNumber: {
+            type: 'string',
+            description: 'Phone number override (optional)'
+          },
+          templateId: {
+            type: 'string',
+            description: 'SMS template ID (optional)'
+          },
+          templateSlug: {
+            type: 'string',
+            description: 'SMS template slug (optional)'
+          },
+          message: {
+            type: 'string',
+            description: 'Custom message (optional, overrides template)'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_quote_sms',
+      description: 'Send a quote via SMS including the share link. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the quote'
+          },
+          quoteId: {
+            type: 'string',
+            description: 'Quote ID if known'
+          },
+          phoneNumber: {
+            type: 'string',
+            description: 'Phone number override (optional)'
+          },
+          message: {
+            type: 'string',
+            description: 'Custom message (optional, overrides default template)'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_quote',
+      description: 'Delete a quote. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          quoteId: {
+            type: 'string',
+            description: 'Quote ID if known'
+          },
+          quoteNumber: {
+            type: 'string',
+            description: 'Quote number if known'
+          },
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the quote'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  // === BOOKING / PAYMENT ACTIONS ===
+  {
+    type: 'function',
+    function: {
+      name: 'unassign_cleaner',
+      description: 'Remove a cleaner assignment from a booking. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the booking'
+          },
+          jobDate: {
+            type: 'string',
+            description: 'Date of the job (YYYY-MM-DD)'
+          },
+          occurrenceId: {
+            type: 'string',
+            description: 'Booking occurrence ID if known'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_booking_address',
+      description: 'Update the service address for a booking series. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          seriesId: {
+            type: 'string',
+            description: 'Booking series ID if known'
+          },
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the booking series'
+          },
+          address: {
+            type: 'string',
+            description: 'New service address'
+          },
+          latitude: {
+            type: 'number',
+            description: 'Latitude for the new address'
+          },
+          longitude: {
+            type: 'number',
+            description: 'Longitude for the new address'
+          }
+        },
+        required: ['address']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_booking_series',
+      description: 'Update booking series details (repeat pattern, duration, notes). REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          seriesId: {
+            type: 'string',
+            description: 'Booking series ID if known'
+          },
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the booking series'
+          },
+          title: {
+            type: 'string',
+            description: 'New title for the booking series'
+          },
+          durationMinutes: {
+            type: 'number',
+            description: 'Duration in minutes'
+          },
+          repeatType: {
+            type: 'string',
+            enum: ['none', 'weekly', 'fortnightly', '3-weekly', 'monthly', '2-monthly'],
+            description: 'Recurrence pattern'
+          },
+          untilDate: {
+            type: 'string',
+            description: 'End date for recurring bookings (YYYY-MM-DD)'
+          },
+          occurrenceCount: {
+            type: 'number',
+            description: 'Number of occurrences to generate'
+          },
+          timezone: {
+            type: 'string',
+            description: 'Timezone (e.g., Australia/Sydney)'
+          },
+          status: {
+            type: 'string',
+            enum: ['active', 'paused', 'cancelled'],
+            description: 'Series status'
+          },
+          notes: {
+            type: 'string',
+            description: 'Notes for the booking series'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_payment_status',
+      description: 'Update payment status for a booking. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the booking'
+          },
+          jobDate: {
+            type: 'string',
+            description: 'Date of the job (YYYY-MM-DD)'
+          },
+          occurrenceId: {
+            type: 'string',
+            description: 'Booking occurrence ID if known'
+          },
+          paymentStatus: {
+            type: 'string',
+            enum: ['waiting_payment', 'invoice_sent', 'paid'],
+            description: 'New payment status'
+          },
+          amountDollars: {
+            type: 'number',
+            description: 'Payment amount in AUD dollars (optional)'
+          },
+          notes: {
+            type: 'string',
+            description: 'Payment notes (optional)'
+          }
+        },
+        required: ['paymentStatus']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_payment_reminder_sms',
+      description: 'Send a payment reminder SMS using a template. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          occurrenceId: {
+            type: 'string',
+            description: 'Booking occurrence ID'
+          },
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the booking'
+          },
+          jobDate: {
+            type: 'string',
+            description: 'Date of the job (YYYY-MM-DD)'
+          },
+          templateId: {
+            type: 'string',
+            description: 'Payment SMS template ID (optional)'
+          },
+          templateSlug: {
+            type: 'string',
+            description: 'Payment SMS template slug (optional)'
+          },
+          message: {
+            type: 'string',
+            description: 'Custom message override (optional)'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_review_reminder_sms',
+      description: 'Send a review reminder SMS using a template. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          occurrenceId: {
+            type: 'string',
+            description: 'Booking occurrence ID'
+          },
+          customerName: {
+            type: 'string',
+            description: 'Customer name to find the booking'
+          },
+          jobDate: {
+            type: 'string',
+            description: 'Date of the job (YYYY-MM-DD)'
+          },
+          templateId: {
+            type: 'string',
+            description: 'Review SMS template ID (optional)'
+          },
+          templateSlug: {
+            type: 'string',
+            description: 'Review SMS template slug (optional)'
+          },
+          message: {
+            type: 'string',
+            description: 'Custom message override (optional)'
+          },
+          reviewLink: {
+            type: 'string',
+            description: 'Override review link (optional)'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  // === MARKETING LOOP ACTIONS ===
+  {
+    type: 'function',
+    function: {
+      name: 'resume_marketing_loop',
+      description: 'Resume marketing automation for a lead. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customerName: {
+            type: 'string',
+            description: 'Customer name'
+          },
+          leadId: {
+            type: 'string',
+            description: 'Lead ID if known'
+          },
+          journeyType: {
+            type: 'string',
+            enum: ['sms', 'email', 'both'],
+            description: 'Journey type to resume (default: both)'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_marketing_now',
+      description: 'Send the next marketing step immediately. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customerName: {
+            type: 'string',
+            description: 'Customer name'
+          },
+          leadId: {
+            type: 'string',
+            description: 'Lead ID if known'
+          },
+          journeyType: {
+            type: 'string',
+            enum: ['sms', 'email'],
+            description: 'Journey type to send now'
+          }
+        },
+        required: ['journeyType']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_marketing_step',
+      description: 'Set the current step for a marketing journey. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          customerName: {
+            type: 'string',
+            description: 'Customer name'
+          },
+          leadId: {
+            type: 'string',
+            description: 'Lead ID if known'
+          },
+          journeyType: {
+            type: 'string',
+            enum: ['sms', 'email', 'both'],
+            description: 'Journey type to update'
+          },
+          step: {
+            type: 'number',
+            description: 'Step number to set (1-7)'
+          }
+        },
+        required: ['step']
+      }
+    }
+  },
+  // === CLEANER / PAYOUT ACTIONS ===
+  {
+    type: 'function',
+    function: {
+      name: 'create_cleaner',
+      description: 'Create a new cleaner profile. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          fullName: { type: 'string', description: 'Cleaner full name' },
+          phone: { type: 'string', description: 'Cleaner phone number' },
+          email: { type: 'string', description: 'Cleaner email address' },
+          baseLocationText: { type: 'string', description: 'Base location text' },
+          baseLat: { type: 'number', description: 'Base latitude' },
+          baseLng: { type: 'number', description: 'Base longitude' },
+          abn: { type: 'string', description: 'ABN' },
+          bankAccountName: { type: 'string', description: 'Bank account name' },
+          bankBsb: { type: 'string', description: 'Bank BSB' },
+          bankAccountNumber: { type: 'string', description: 'Bank account number' },
+          minBookingMinutes: { type: 'number', description: 'Minimum booking minutes' },
+          noticeHours: { type: 'number', description: 'Notice required (hours)' },
+          cancellationPolicy: { type: 'string', description: 'Cancellation policy' },
+          hasTransport: { type: 'boolean', description: 'Has transport' },
+          transportType: { type: 'string', description: 'Transport type' },
+          maxTravelKm: { type: 'number', description: 'Max travel distance in km' },
+          canTransportEquipment: { type: 'boolean', description: 'Can transport equipment' },
+          publicLiabilityPolicyNumber: { type: 'string', description: 'Public liability policy number' },
+          publicLiabilityExpiry: { type: 'string', description: 'Public liability expiry date' },
+          teamSize: { type: 'number', description: 'Team size' },
+          rates: { type: 'object', description: 'Rates JSON object' },
+          availability: { type: 'object', description: 'Availability matrix' },
+          active: { type: 'boolean', description: 'Is active' }
+        },
+        required: ['fullName']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_cleaner',
+      description: 'Update a cleaner profile. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          cleanerId: { type: 'string', description: 'Cleaner ID if known' },
+          cleanerName: { type: 'string', description: 'Cleaner name to search' },
+          fullName: { type: 'string', description: 'Cleaner full name' },
+          phone: { type: 'string', description: 'Cleaner phone number' },
+          email: { type: 'string', description: 'Cleaner email address' },
+          baseLocationText: { type: 'string', description: 'Base location text' },
+          baseLat: { type: 'number', description: 'Base latitude' },
+          baseLng: { type: 'number', description: 'Base longitude' },
+          abn: { type: 'string', description: 'ABN' },
+          bankAccountName: { type: 'string', description: 'Bank account name' },
+          bankBsb: { type: 'string', description: 'Bank BSB' },
+          bankAccountNumber: { type: 'string', description: 'Bank account number' },
+          minBookingMinutes: { type: 'number', description: 'Minimum booking minutes' },
+          noticeHours: { type: 'number', description: 'Notice required (hours)' },
+          cancellationPolicy: { type: 'string', description: 'Cancellation policy' },
+          hasTransport: { type: 'boolean', description: 'Has transport' },
+          transportType: { type: 'string', description: 'Transport type' },
+          maxTravelKm: { type: 'number', description: 'Max travel distance in km' },
+          canTransportEquipment: { type: 'boolean', description: 'Can transport equipment' },
+          publicLiabilityPolicyNumber: { type: 'string', description: 'Public liability policy number' },
+          publicLiabilityExpiry: { type: 'string', description: 'Public liability expiry date' },
+          teamSize: { type: 'number', description: 'Team size' },
+          rates: { type: 'object', description: 'Rates JSON object' },
+          availability: { type: 'object', description: 'Availability matrix' },
+          active: { type: 'boolean', description: 'Is active' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_cleaner',
+      description: 'Delete a cleaner profile. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          cleanerId: { type: 'string', description: 'Cleaner ID if known' },
+          cleanerName: { type: 'string', description: 'Cleaner name to search' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_cleaner_review',
+      description: 'Create a cleaner job review. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          occurrenceId: { type: 'string', description: 'Booking occurrence ID' },
+          cleanerId: { type: 'string', description: 'Cleaner ID (optional)' },
+          cleanerName: { type: 'string', description: 'Cleaner name (optional)' },
+          rating: { type: 'number', description: 'Rating 1-5' },
+          notes: { type: 'string', description: 'Review notes' }
+        },
+        required: ['rating']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_cleaner_payout',
+      description: 'Update cleaner payout amount or notes. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          payoutId: { type: 'string', description: 'Payout ID if known' },
+          occurrenceId: { type: 'string', description: 'Booking occurrence ID to find payout' },
+          payoutAmount: { type: 'number', description: 'New payout amount' },
+          notes: { type: 'string', description: 'Notes' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mark_cleaner_payout_paid',
+      description: 'Mark a cleaner payout as paid or unpaid. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          payoutId: { type: 'string', description: 'Payout ID if known' },
+          occurrenceId: { type: 'string', description: 'Booking occurrence ID to find payout' },
+          markPaid: { type: 'boolean', description: 'Set to true to mark paid, false to mark unpaid' }
+        },
+        required: []
+      }
+    }
+  },
+  // === TODOS ===
+  {
+    type: 'function',
+    function: {
+      name: 'create_todo',
+      description: 'Create a manual todo. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Todo title' },
+          description: { type: 'string', description: 'Todo description' },
+          dueDate: { type: 'string', description: 'Due date (YYYY-MM-DD)' },
+          rollOver: { type: 'boolean', description: 'Roll over if missed (default true)' }
+        },
+        required: ['title']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_todo',
+      description: 'Update a manual todo. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          todoId: { type: 'string', description: 'Todo ID' },
+          title: { type: 'string', description: 'Todo title' },
+          description: { type: 'string', description: 'Todo description' },
+          isCompleted: { type: 'boolean', description: 'Mark as completed' },
+          dueDate: { type: 'string', description: 'Due date (YYYY-MM-DD)' }
+        },
+        required: ['todoId']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_todo',
+      description: 'Delete a manual todo. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          todoId: { type: 'string', description: 'Todo ID' }
+        },
+        required: ['todoId']
+      }
+    }
+  },
+  // === ADMIN SETTINGS ===
+  {
+    type: 'function',
+    function: {
+      name: 'send_team_invite',
+      description: 'Invite a team member to the organization. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          email: { type: 'string', description: 'Invitee email' },
+          role: { type: 'string', enum: ['owner', 'admin', 'staff'], description: 'Invite role' }
+        },
+        required: ['email']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_member_role',
+      description: 'Update a team member role. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          memberId: { type: 'string', description: 'Member ID if known' },
+          email: { type: 'string', description: 'Member email to search' },
+          role: { type: 'string', enum: ['owner', 'admin', 'manager', 'staff', 'cleaner'], description: 'New role' }
+        },
+        required: ['role']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'remove_member',
+      description: 'Remove a team member from the organization. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          memberId: { type: 'string', description: 'Member ID if known' },
+          email: { type: 'string', description: 'Member email to search' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'revoke_invite',
+      description: 'Revoke a pending team invite. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          inviteId: { type: 'string', description: 'Invite ID if known' },
+          email: { type: 'string', description: 'Invitee email to search' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_integration',
+      description: 'Update organization integrations (API keys, enabled state). REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          provider: { type: 'string', enum: ['stripe', 'dialpad', 'outlook', 'resend', 'openai', 'mapbox'], description: 'Integration provider' },
+          enabled: { type: 'boolean', description: 'Enable/disable integration' },
+          config: { type: 'object', description: 'Integration config object' }
+        },
+        required: ['provider']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_org_settings',
+      description: 'Update organization settings (business details, pricing, branding). REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          businessName: { type: 'string', description: 'Business name' },
+          abn: { type: 'string', description: 'ABN' },
+          phone: { type: 'string', description: 'Business phone' },
+          email: { type: 'string', description: 'Business email' },
+          operatingName: { type: 'string', description: 'Trading name' },
+          timezone: { type: 'string', description: 'Timezone' },
+          clientRate: { type: 'number', description: 'Default client hourly rate' },
+          cleanerRate: { type: 'number', description: 'Default cleaner hourly rate' },
+          gstRate: { type: 'number', description: 'GST rate (decimal)' },
+          discountPct: { type: 'number', description: 'Default discount percentage' },
+          depositPct: { type: 'number', description: 'Default deposit percentage' },
+          logoUrl: { type: 'string', description: 'Logo URL' },
+          primaryColor: { type: 'string', description: 'Primary color' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_automation_setting',
+      description: 'Update automation settings for the organization. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          automationType: {
+            type: 'string',
+            enum: ['marketing_sms', 'marketing_email', 'booking_completion', 'booking_reminder', 'quote_email', 'payment_sms', 'review_sms', 'daily_summary'],
+            description: 'Automation type'
+          },
+          enabled: { type: 'boolean', description: 'Enable/disable automation' },
+          config: { type: 'object', description: 'Automation config JSON' }
+        },
+        required: ['automationType']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_template',
+      description: 'Update a messaging template (marketing/payment/review). REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          templateType: { type: 'string', enum: ['marketing_sms', 'marketing_email', 'payment_sms', 'review_sms'], description: 'Template type' },
+          templateId: { type: 'string', description: 'Template ID' },
+          title: { type: 'string', description: 'Template title' },
+          subject: { type: 'string', description: 'Email subject (marketing_email only)' },
+          body: { type: 'string', description: 'Template body' }
+        },
+        required: ['templateType', 'templateId']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_default_template',
+      description: 'Set the default payment or review SMS template. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          templateType: { type: 'string', enum: ['payment_sms', 'review_sms'], description: 'Template type' },
+          templateId: { type: 'string', description: 'Template ID to set as default' }
+        },
+        required: ['templateType', 'templateId']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_sms_template',
+      description: 'Create a custom SMS template. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Template title' },
+          body: { type: 'string', description: 'Template body' }
+        },
+        required: ['body']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_workflow',
+      description: 'Create an automation workflow. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Workflow name' },
+          description: { type: 'string', description: 'Workflow description' },
+          enabled: { type: 'boolean', description: 'Enable workflow' },
+          triggerType: { type: 'string', enum: ['lead_status_change', 'time_based', 'event_based'], description: 'Trigger type' },
+          triggerConfig: { type: 'object', description: 'Trigger config JSON' },
+          steps: {
+            type: 'array',
+            description: 'Workflow steps',
+            items: {
+              type: 'object',
+              properties: {
+                actionType: { type: 'string' },
+                actionConfig: { type: 'object' }
+              }
+            }
+          }
+        },
+        required: ['name', 'triggerType']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_workflow',
+      description: 'Update an automation workflow. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          workflowId: { type: 'string', description: 'Workflow ID' },
+          name: { type: 'string', description: 'Workflow name' },
+          description: { type: 'string', description: 'Workflow description' },
+          enabled: { type: 'boolean', description: 'Enable workflow' },
+          triggerType: { type: 'string', enum: ['lead_status_change', 'time_based', 'event_based'], description: 'Trigger type' },
+          triggerConfig: { type: 'object', description: 'Trigger config JSON' },
+          steps: {
+            type: 'array',
+            description: 'Workflow steps (replaces existing steps if provided)',
+            items: {
+              type: 'object',
+              properties: {
+                actionType: { type: 'string' },
+                actionConfig: { type: 'object' }
+              }
+            }
+          }
+        },
+        required: ['workflowId']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_workflow',
+      description: 'Delete a workflow. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          workflowId: { type: 'string', description: 'Workflow ID' }
+        },
+        required: ['workflowId']
+      }
+    }
+  },
+  // === COMMUNICATIONS ===
+  {
+    type: 'function',
+    function: {
+      name: 'summarize_call',
+      description: 'Fetch and summarize a call transcript. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          callId: { type: 'string', description: 'Dialpad call ID' },
+          customerName: { type: 'string', description: 'Customer name to find the call' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'sync_emails',
+      description: 'Sync latest Outlook emails into the CRM. REQUIRES CONFIRMATION before executing.',
+      parameters: {
+        type: 'object',
+        properties: {},
         required: []
       }
     }
@@ -1869,6 +3051,159 @@ async function handleGetMarketingStatus(
   }
 }
 
+async function handleGetQuoteShareLink(
+  ctx: OrgContext,
+  args: Record<string, unknown>
+): Promise<{ success: boolean; data?: unknown; error?: string }> {
+  const { supabaseAdmin, orgId } = ctx
+
+  let query = supabaseAdmin
+    .from('quotes')
+    .select('id, quote_number, share_token, customer_name, lead:extracted_leads(name)')
+    .eq('org_id', orgId)
+    .order('created_at', { ascending: false })
+    .limit(20)
+
+  if (args.quoteId) {
+    query = query.eq('id', args.quoteId)
+  } else if (args.quoteNumber) {
+    query = query.eq('quote_number', args.quoteNumber)
+  }
+
+  const { data: quotes, error } = await query
+
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  if (!quotes || quotes.length === 0) {
+    return { success: false, error: 'No quote found' }
+  }
+
+  let quote = quotes[0]
+  if (args.customerName) {
+    const search = (args.customerName as string).toLowerCase()
+    quote = quotes.find((q: any) =>
+      q.customer_name?.toLowerCase().includes(search) ||
+      q.lead?.name?.toLowerCase().includes(search)
+    ) || quote
+  }
+
+  const shareToken = quote.share_token || null
+  const shareUrl = shareToken ? buildQuoteShareUrl(shareToken) : null
+
+  return {
+    success: true,
+    data: {
+      quoteId: quote.id,
+      quoteNumber: quote.quote_number || quote.id.slice(0, 8),
+      customer: quote.customer_name || quote.lead?.name || 'Unknown',
+      shareToken,
+      shareUrl
+    }
+  }
+}
+
+async function handleGetTodos(
+  ctx: OrgContext,
+  args: Record<string, unknown>
+): Promise<{ success: boolean; data?: unknown; error?: string }> {
+  const { supabaseAdmin, orgId } = ctx
+  const status = (args.status as string) || 'pending'
+  const limit = Math.min((args.limit as number) || 50, 200)
+
+  let query = supabaseAdmin
+    .from('todos')
+    .select('id, title, description, is_completed, created_at, completed_at, due_date')
+    .eq('org_id', orgId)
+    .eq('type', 'manual')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  if (status === 'pending') {
+    query = query.eq('is_completed', false)
+  } else if (status === 'completed') {
+    query = query.eq('is_completed', true)
+  }
+
+  const { data, error } = await query
+
+  if (error) {
+    return { success: false, error: error.message }
+  }
+
+  return {
+    success: true,
+    data: {
+      todos: data || [],
+      count: data?.length || 0
+    }
+  }
+}
+
+async function handleGetCleanerPayouts(
+  ctx: OrgContext,
+  args: Record<string, unknown>
+): Promise<{ success: boolean; data?: unknown; error?: string }> {
+  const { supabaseAdmin, orgId, org } = ctx
+  const timezone = (org.timezone as string) || 'Australia/Sydney'
+  const status = (args.status as string) || 'all'
+  const limit = Math.min((args.limit as number) || 50, 200)
+
+  let query = supabaseAdmin
+    .from('cleaner_payouts')
+    .select(`
+      id,
+      occurrence_id,
+      payout_amount,
+      job_total,
+      paid_at,
+      notes,
+      cleaner:cleaners(full_name),
+      occurrence:booking_occurrences(start_at, series:booking_series(title, lead:extracted_leads(name)))
+    `)
+    .eq('org_id', orgId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  if (status === 'paid') {
+    query = query.not('paid_at', 'is', null)
+  } else if (status === 'unpaid') {
+    query = query.is('paid_at', null)
+  }
+
+  const { data, error } = await query
+
+  if (error) {
+    return { success: false, error: error.message }
+  }
+
+  let results = data || []
+  if (args.cleanerName) {
+    const search = (args.cleanerName as string).toLowerCase()
+    results = results.filter((p: any) =>
+      p.cleaner?.full_name?.toLowerCase().includes(search)
+    )
+  }
+
+  const formatted = results.map((p: any) => ({
+    id: p.id,
+    cleaner: p.cleaner?.full_name || 'Unknown',
+    customer: p.occurrence?.series?.lead?.name || 'Unknown',
+    jobTitle: p.occurrence?.series?.title || 'Cleaning',
+    jobDate: p.occurrence?.start_at
+      ? new Date(p.occurrence.start_at).toLocaleDateString('en-AU', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', timeZone: timezone })
+      : null,
+    payoutAmount: formatCurrencyAUD(p.payout_amount),
+    jobTotal: formatCurrencyAUD(p.job_total),
+    paidAt: p.paid_at
+      ? new Date(p.paid_at).toLocaleDateString('en-AU', { timeZone: timezone })
+      : null,
+    notes: p.notes || null
+  }))
+
+  return { success: true, data: { payouts: formatted, count: formatted.length } }
+}
+
 async function handleGetCleanerSchedule(
   ctx: OrgContext,
   args: Record<string, unknown>
@@ -2092,7 +3427,7 @@ async function handleGetAnalytics(
       .from('extracted_leads')
       .select('id', { count: 'exact', head: true })
       .eq('org_id', orgId)
-      .eq('status', 'Booking Confirmed')
+      .in('status', ['Job Won', 'Jobs Completed', 'Won'])
       .gte('created_at', startDate.toISOString())
       .lte('created_at', endDate.toISOString())
 
@@ -2191,6 +3526,8 @@ async function generateActionPreview(
       if (!phone) {
         return { preview: {}, error: 'Could not find phone number for this customer' }
       }
+
+      phone = normalizePhoneToE164AU(phone) || phone
 
       return {
         preview: {
@@ -2371,14 +3708,17 @@ async function generateActionPreview(
         return { preview: {}, error: 'Customer name is required' }
       }
 
+      const normalizedPhone = normalizePhoneToE164AU(args.phone)
+      const phonePreview = normalizedPhone || (args.phone as string | undefined) || 'Not provided'
+
       return {
         preview: {
           action: 'Create new lead',
           name: name,
-          phone: args.phone || 'Not provided',
+          phone: phonePreview,
           email: args.email || 'Not provided',
           notes: args.notes || 'None',
-          status: args.status || 'Inquiry'
+          status: args.status || 'Unanswered'
         }
       }
     }
@@ -2539,6 +3879,8 @@ async function generateActionPreview(
         return { preview: {}, error: 'Could not find phone number for this customer' }
       }
 
+      phone = normalizePhoneToE164AU(phone) || phone
+
       return {
         preview: {
           action: 'Initiate phone call',
@@ -2549,49 +3891,122 @@ async function generateActionPreview(
       }
     }
 
-    case 'create_payment_link': {
-      let quoteId = args.quoteId as string | undefined
-      let amountDollars = args.amountDollars as number | undefined
+        case 'create_payment_link': {
+      const amountOverride = args.amountDollars as number | undefined
+      const occurrenceIdArg = args.occurrenceId as string | undefined
+      const jobDateArg = args.jobDate as string | undefined
       let customerName = 'Unknown'
       let customerEmail: string | undefined
+      let amountCents: number | null = null
+      let description = (args.description as string) || undefined
+      let quoteId: string | undefined
+      let occurrenceId: string | undefined
+      let shareToken: string | undefined
+      let jobDateLabel: string | null = null
 
-      if (args.customerName && !quoteId) {
-        const { data: quotes } = await supabaseAdmin
-          .from('quotes')
-          .select('id, customer_name, customer_email, total_inc_gst, lead:extracted_leads(name, email)')
+      if (occurrenceIdArg || jobDateArg) {
+        let query = supabaseAdmin
+          .from('booking_occurrences')
+          .select(`
+            id,
+            start_at,
+            payment_amount_cents,
+            series:booking_series(title, quote_id, quote:quotes(id, total_inc_gst, share_token), lead:extracted_leads(name, email))
+          `)
           .eq('org_id', orgId)
-          .or(`customer_name.ilike.%${args.customerName}%`)
+          .order('start_at', { ascending: false })
+          .limit(20)
+
+        if (occurrenceIdArg) {
+          query = query.eq('id', occurrenceIdArg)
+        }
+        if (jobDateArg) {
+          query = query.gte('start_at', jobDateArg + 'T00:00:00').lte('start_at', jobDateArg + 'T23:59:59')
+        }
+
+        const { data: bookings } = await query
+        if (bookings?.length) {
+          let booking = bookings[0]
+          if (args.customerName) {
+            const search = (args.customerName as string).toLowerCase()
+            booking = bookings.find((b: any) =>
+              b.series?.lead?.name?.toLowerCase().includes(search)
+            ) || booking
+          }
+
+          occurrenceId = booking.id
+          quoteId = booking.series?.quote_id || booking.series?.quote?.id
+          customerName = booking.series?.lead?.name || 'Unknown'
+          customerEmail = booking.series?.lead?.email || undefined
+          shareToken = booking.series?.quote?.share_token || undefined
+          jobDateLabel = booking.start_at ? new Date(booking.start_at).toLocaleDateString('en-AU', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : null
+
+          const quoteTotal = booking.series?.quote?.total_inc_gst
+          amountCents = typeof amountOverride === 'number'
+            ? Math.round(amountOverride * 100)
+            : booking.payment_amount_cents ?? (quoteTotal ? Math.round(quoteTotal * 100) : null)
+
+          if (!description) {
+            description = booking.series?.title || `Cleaning for ${customerName}`
+          }
+        }
+      } else {
+        let quoteQuery = supabaseAdmin
+          .from('quotes')
+          .select('id, customer_name, customer_email, total_inc_gst, share_token, lead:extracted_leads(name, email)')
+          .eq('org_id', orgId)
           .order('created_at', { ascending: false })
-          .limit(1)
+          .limit(10)
+
+        if (args.quoteId) {
+          quoteQuery = quoteQuery.eq('id', args.quoteId)
+        }
+
+        const { data: quotes } = await quoteQuery
 
         if (quotes?.length) {
-          quoteId = quotes[0].id
-          customerName = quotes[0].customer_name || (quotes[0].lead as any)?.name || 'Unknown'
-          customerEmail = quotes[0].customer_email || (quotes[0].lead as any)?.email
-          if (!amountDollars) {
-            amountDollars = quotes[0].total_inc_gst
+          let quote = quotes[0]
+          if (args.customerName && !args.quoteId) {
+            const search = (args.customerName as string).toLowerCase()
+            quote = quotes.find((q: any) =>
+              q.customer_name?.toLowerCase().includes(search) ||
+              q.lead?.name?.toLowerCase().includes(search)
+            ) || quote
           }
+
+          quoteId = quote.id
+          customerName = quote.customer_name || quote.lead?.name || 'Unknown'
+          customerEmail = quote.customer_email || quote.lead?.email
+          shareToken = quote.share_token || undefined
+          amountCents = typeof amountOverride === 'number'
+            ? Math.round(amountOverride * 100)
+            : (quote.total_inc_gst ? Math.round(quote.total_inc_gst * 100) : null)
         }
       }
 
-      if (!amountDollars) {
-        return { preview: {}, error: 'Amount is required (or specify a customer with a quote)' }
+      if (!amountCents) {
+        return { preview: {}, error: 'Amount is required (or specify a customer with a quote/booking)' }
       }
 
       return {
         preview: {
           action: 'Create payment link',
           customer: customerName,
-          amount: `$${amountDollars.toFixed(2)} AUD`,
-          description: args.description || 'Payment for cleaning services',
+          jobDate: jobDateLabel,
+          amount: formatAmountCents(amountCents) + ' AUD',
+          description: description || 'Payment for cleaning services',
           _quoteId: quoteId,
-          _amountCents: Math.round(amountDollars * 100),
-          _customerEmail: customerEmail
+          _occurrenceId: occurrenceId,
+          _amountCents: amountCents,
+          _customerEmail: customerEmail,
+          _shareToken: shareToken,
+          _description: description
         }
       }
     }
 
     case 'start_marketing_loop': {
+
       let leadId = args.leadId as string | undefined
       let customerName = 'Unknown'
       let phone: string | undefined
@@ -2670,57 +4085,9 @@ async function generateActionPreview(
       }
     }
 
-    case 'reschedule_booking': {
-      const newDateTime = args.newDateTime as string
-      if (!newDateTime) {
-        return { preview: {}, error: 'New date/time is required' }
-      }
-
-      let occurrenceId = args.occurrenceId as string | undefined
-      let customerName = 'Unknown'
-      let currentDate = 'Unknown'
-
-      if (args.customerName && !occurrenceId) {
-        const { data: bookings } = await supabaseAdmin
-          .from('booking_occurrences')
-          .select('id, start_at, series:booking_series(lead:extracted_leads(name))')
-          .eq('org_id', orgId)
-          .eq('status', 'scheduled')
-          .order('start_at', { ascending: true })
-          .limit(10)
-
-        if (bookings?.length) {
-          const search = (args.customerName as string).toLowerCase()
-          const booking = bookings.find((b: any) =>
-            b.series?.lead?.name?.toLowerCase().includes(search)
-          ) || bookings[0]
-
-          occurrenceId = booking.id
-          customerName = booking.series?.lead?.name || 'Unknown'
-          currentDate = new Date(booking.start_at).toLocaleString('en-AU')
-        }
-      }
-
-      if (!occurrenceId) {
-        return { preview: {}, error: 'Could not find booking to reschedule' }
-      }
-
-      const newDate = new Date(newDateTime)
-
-      return {
-        preview: {
-          action: 'Reschedule booking',
-          customer: customerName,
-          currentDateTime: currentDate,
-          newDate: newDate.toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-          newTime: newDate.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }),
-          _occurrenceId: occurrenceId,
-          _newDateTime: newDateTime
-        }
-      }
-    }
-
     case 'cancel_booking_series': {
+
+
       let seriesId = args.seriesId as string | undefined
       let customerName = 'Unknown'
       let futureCount = 0
@@ -2804,7 +4171,10 @@ async function generateActionPreview(
       }
 
       const changes: string[] = []
-      if (args.newPhone) changes.push(`Phone: ${lead.phone_number || 'none'} â†’ ${args.newPhone}`)
+      const normalizedNewPhone = args.newPhone
+        ? (normalizePhoneToE164AU(args.newPhone) || (args.newPhone as string))
+        : undefined
+      if (args.newPhone) changes.push(`Phone: ${lead.phone_number || 'none'} â†’ ${normalizedNewPhone}`)
       if (args.newEmail) changes.push(`Email: ${lead.email || 'none'} â†’ ${args.newEmail}`)
       if (args.newAddress) changes.push(`Address: ${lead.address || 'none'} â†’ ${args.newAddress}`)
       if (args.newNotes) changes.push(`Notes: will be replaced`)
@@ -2820,7 +4190,7 @@ async function generateActionPreview(
           customer: lead.name,
           changes: changes.join('; '),
           _leadId: leadId,
-          _newPhone: args.newPhone,
+          _newPhone: normalizedNewPhone,
           _newEmail: args.newEmail,
           _newAddress: args.newAddress,
           _newNotes: args.newNotes,
@@ -2830,84 +4200,217 @@ async function generateActionPreview(
       }
     }
 
-    case 'edit_quote': {
-      // Find the quote
+        case 'edit_quote': {
+      let quoteQuery = supabaseAdmin
+        .from('quotes')
+        .select(`
+          id,
+          quote_number,
+          customer_name,
+          customer_email,
+          customer_phone,
+          total_inc_gst,
+          service,
+          bedrooms,
+          bathrooms,
+          addons,
+          custom_addons,
+          discount_percentage,
+          deposit_percentage,
+          hourly_rate,
+          cleaner_rate,
+          cleaner_rate_type,
+          address,
+          address_lat,
+          address_lng,
+          notes,
+          description,
+          lead_id,
+          lead:extracted_leads(name)
+        `)
+        .eq('org_id', orgId)
+        .order('created_at', { ascending: false })
+        .limit(20)
+
       let quoteId = args.quoteId as string | undefined
-      let quote: any = null
-
       if (quoteId) {
-        const { data } = await supabaseAdmin
-          .from('quotes')
-          .select('id, quote_number, customer_name, addons, discount_percentage, address, notes, total_inc_gst, lead:extracted_leads(name)')
-          .eq('id', quoteId)
-          .eq('org_id', orgId)
-          .single()
-        quote = data
-      } else if (args.customerName) {
-        const { data: quotes } = await supabaseAdmin
-          .from('quotes')
-          .select('id, quote_number, customer_name, addons, discount_percentage, address, notes, total_inc_gst, lead:extracted_leads(name)')
-          .eq('org_id', orgId)
-          .order('created_at', { ascending: false })
-          .limit(10)
+        quoteQuery = quoteQuery.eq('id', quoteId)
+      }
 
-        if (quotes?.length) {
-          const search = (args.customerName as string).toLowerCase()
-          quote = quotes.find((q: any) =>
-            q.customer_name?.toLowerCase().includes(search) ||
-            q.lead?.name?.toLowerCase().includes(search)
-          ) || quotes[0]
-          quoteId = quote.id
-        }
+      const { data: quotes } = await quoteQuery
+
+      if (!quotes || quotes.length === 0) {
+        return { preview: {}, error: 'No quote found' }
+      }
+
+      let quote = quotes[0]
+      if (!quoteId && args.customerName) {
+        const search = (args.customerName as string).toLowerCase()
+        quote = quotes.find((q: any) =>
+          q.customer_name?.toLowerCase().includes(search) ||
+          q.lead?.name?.toLowerCase().includes(search)
+        ) || quote
       }
 
       if (!quote) {
         return { preview: {}, error: 'Could not find quote' }
       }
 
-      const changes: string[] = []
-      const currentAddons = quote.addons || []
-      let newAddons = [...currentAddons]
+      const hasChanges =
+        args.service !== undefined ||
+        args.bedrooms !== undefined ||
+        args.bathrooms !== undefined ||
+        args.setAddons !== undefined ||
+        args.addAddons !== undefined ||
+        args.removeAddons !== undefined ||
+        args.customAddons !== undefined ||
+        args.newDiscountPercentage !== undefined ||
+        args.newDepositPercentage !== undefined ||
+        args.newHourlyRate !== undefined ||
+        args.newCleanerRate !== undefined ||
+        args.newCleanerRateType !== undefined ||
+        args.newAddress !== undefined ||
+        args.newAddressLat !== undefined ||
+        args.newAddressLng !== undefined ||
+        args.newNotes !== undefined ||
+        args.newDescription !== undefined ||
+        args.newCustomerName !== undefined ||
+        args.newCustomerEmail !== undefined ||
+        args.newCustomerPhone !== undefined
 
+      if (!hasChanges) {
+        return { preview: {}, error: 'No changes specified' }
+      }
+
+      const service = (args.service as ServiceType) || (quote.service as ServiceType)
+      const bedrooms = (args.bedrooms as number) ?? quote.bedrooms
+      const bathrooms = (args.bathrooms as number) ?? quote.bathrooms
+
+      if (!service || !bedrooms || !bathrooms) {
+        return { preview: {}, error: 'Service, bedrooms, and bathrooms are required to recalculate quote' }
+      }
+
+      let newAddons = Array.isArray(quote.addons) ? [...quote.addons] : []
+      if (args.setAddons) {
+        newAddons = [...(args.setAddons as string[])]
+      }
       if (args.addAddons) {
         const toAdd = args.addAddons as string[]
         newAddons = [...new Set([...newAddons, ...toAdd])]
-        changes.push(`Add: ${toAdd.join(', ')}`)
       }
       if (args.removeAddons) {
         const toRemove = args.removeAddons as string[]
-        newAddons = newAddons.filter(a => !toRemove.includes(a))
-        changes.push(`Remove: ${toRemove.join(', ')}`)
-      }
-      if (args.newDiscountPercentage !== undefined) {
-        changes.push(`Discount: ${quote.discount_percentage || 0}% â†’ ${args.newDiscountPercentage}%`)
-      }
-      if (args.newAddress) {
-        changes.push(`Address: ${quote.address || 'none'} â†’ ${args.newAddress}`)
-      }
-      if (args.newNotes) {
-        changes.push(`Notes updated`)
+        newAddons = newAddons.filter((a) => !toRemove.includes(a))
       }
 
-      if (changes.length === 0) {
-        return { preview: {}, error: 'No changes specified' }
+      const customAddons = (args.customAddons as any[]) ?? (quote.custom_addons || [])
+      const discountPct = (args.newDiscountPercentage as number) ?? (quote.discount_percentage ?? 0)
+      const depositPct = (args.newDepositPercentage as number) ?? (quote.deposit_percentage ?? 0)
+
+      const clientRate =
+        (args.newHourlyRate as number) ??
+        (quote.hourly_rate as number) ??
+        (ctx.org.default_client_hourly_rate as number) ??
+        DEFAULT_PRICING.CLIENT_HOURLY_RATE
+
+      const cleanerRate =
+        (args.newCleanerRate as number) ??
+        (quote.cleaner_rate as number) ??
+        (ctx.org.default_cleaner_hourly_rate as number) ??
+        DEFAULT_PRICING.CLEANER_HOURLY_RATE
+
+      const cleanerRateType = (args.newCleanerRateType as string) || quote.cleaner_rate_type || 'hour'
+
+      let quoteResult: any
+      try {
+        quoteResult = calculateQuote({
+          service,
+          bedrooms,
+          bathrooms,
+          addons: newAddons,
+          customAddons: customAddons || [],
+          clientHourlyRate: clientRate,
+          cleanerHourlyRate: cleanerRate,
+          cleanerRateType: cleanerRateType === 'job' ? 'job' : 'hour',
+          discountApplied: discountPct > 0,
+          discountPercentage: discountPct,
+          depositPercentage: depositPct
+        })
+      } catch (err) {
+        return { preview: {}, error: err instanceof Error ? err.message : 'Failed to recalculate quote' }
       }
+
+      const changes: string[] = []
+      if (args.service) changes.push(`Service -> ${service}`)
+      if (args.bedrooms !== undefined || args.bathrooms !== undefined) {
+        changes.push(`Rooms -> ${bedrooms} bed / ${bathrooms} bath`)
+      }
+      if (args.setAddons || args.addAddons || args.removeAddons) changes.push('Add-ons updated')
+      if (args.customAddons) changes.push('Custom add-ons updated')
+      if (args.newDiscountPercentage !== undefined) changes.push(`Discount -> ${discountPct}%`)
+      if (args.newDepositPercentage !== undefined) changes.push(`Deposit -> ${depositPct}%`)
+      if (args.newHourlyRate !== undefined) changes.push(`Client rate -> $${clientRate}/hr`)
+      if (args.newCleanerRate !== undefined) changes.push(`Cleaner rate -> $${cleanerRate}/${cleanerRateType}`)
+      if (args.newAddress) changes.push('Address updated')
+      if (args.newNotes) changes.push('Notes updated')
+      if (args.newDescription) changes.push('Description updated')
+      if (args.newCustomerName || args.newCustomerEmail || args.newCustomerPhone) changes.push('Customer details updated')
+
+      const updates: Record<string, unknown> = {
+        service,
+        bedrooms,
+        bathrooms,
+        addons: newAddons,
+        custom_addons: customAddons || [],
+        hourly_rate: clientRate,
+        cleaner_rate: cleanerRate,
+        cleaner_rate_type: cleanerRateType,
+        main_service_hours: quoteResult.mainServiceHours,
+        add_on_hours: quoteResult.totalAddOnHours,
+        total_hours: quoteResult.totalLaborHours,
+        subtotal: quoteResult.subtotal,
+        discount_amount: quoteResult.discountAmount,
+        discount_percentage: discountPct,
+        net_revenue: quoteResult.netRevenue,
+        gst: quoteResult.gst,
+        total_inc_gst: quoteResult.totalIncGst,
+        cleaner_pay: quoteResult.cleanerPay,
+        profit: quoteResult.profit,
+        margin: quoteResult.profitMarginPct,
+        deposit_percentage: depositPct,
+        deposit_amount: quoteResult.depositAmount,
+        remaining_balance: quoteResult.remainingBalance
+      }
+
+      if (args.newAddress !== undefined) updates.address = args.newAddress
+      if (args.newAddressLat !== undefined) updates.address_lat = args.newAddressLat
+      if (args.newAddressLng !== undefined) updates.address_lng = args.newAddressLng
+      if (args.newNotes !== undefined) updates.notes = args.newNotes
+      if (args.newDescription !== undefined) updates.description = args.newDescription
+      if (args.newCustomerName !== undefined) updates.customer_name = args.newCustomerName
+      if (args.newCustomerEmail !== undefined) updates.customer_email = args.newCustomerEmail
+      if (args.newCustomerPhone !== undefined) updates.customer_phone = args.newCustomerPhone
 
       return {
         preview: {
           action: 'Edit quote',
           quoteNumber: quote.quote_number || quote.id.slice(0, 8),
           customer: quote.customer_name || quote.lead?.name || 'Unknown',
-          currentTotal: `$${quote.total_inc_gst?.toFixed(2) || 'N/A'}`,
+          currentTotal: formatCurrencyAUD(quote.total_inc_gst),
+          newTotal: formatCurrencyAUD(quoteResult.totalIncGst),
           changes: changes.join('; '),
-          _quoteId: quoteId,
-          _newAddons: newAddons,
-          _newDiscountPercentage: args.newDiscountPercentage,
-          _newAddress: args.newAddress,
-          _newNotes: args.newNotes
+          _quoteId: quote.id,
+          _leadId: quote.lead_id,
+          _updates: updates,
+          _customerUpdates: {
+            name: args.newCustomerName,
+            email: args.newCustomerEmail,
+            phone_number: args.newCustomerPhone
+          }
         }
       }
     }
+
 
     case 'mark_booking_paid': {
       // Find the booking
@@ -2918,7 +4421,7 @@ async function generateActionPreview(
         const { data } = await supabaseAdmin
           .from('booking_occurrences')
           .select(`
-            id, start_at, payment_status,
+            id, start_at, payment_status, payment_amount_cents,
             series:booking_series(title, quote:quotes(total_inc_gst), lead:extracted_leads(name))
           `)
           .eq('id', occurrenceId)
@@ -2929,7 +4432,7 @@ async function generateActionPreview(
         let query = supabaseAdmin
           .from('booking_occurrences')
           .select(`
-            id, start_at, payment_status,
+            id, start_at, payment_status, payment_amount_cents,
             series:booking_series(title, quote:quotes(total_inc_gst), lead:extracted_leads(name))
           `)
           .eq('org_id', orgId)
@@ -2961,7 +4464,11 @@ async function generateActionPreview(
       }
 
       const timezone = (ctx.org.timezone as string) || 'Australia/Sydney'
-      const amount = (args.amount as number) || booking.series?.quote?.total_inc_gst
+      const amountFromArgs = typeof args.amount === 'number' ? Math.round((args.amount as number) * 100) : null
+      const quoteAmountCents = booking.series?.quote?.total_inc_gst
+        ? Math.round(booking.series.quote.total_inc_gst * 100)
+        : null
+      const amountCents = amountFromArgs ?? booking.payment_amount_cents ?? quoteAmountCents
       const paymentMethod = (args.paymentMethod as string) || 'cash'
 
       return {
@@ -2969,10 +4476,10 @@ async function generateActionPreview(
           action: 'Record payment',
           customer: booking.series?.lead?.name || 'Unknown',
           jobDate: new Date(booking.start_at).toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone }),
-          amount: amount ? `$${amount.toFixed(2)}` : 'N/A',
+          amount: amountCents ? formatAmountCents(amountCents) : 'N/A',
           paymentMethod: paymentMethod,
           _occurrenceId: occurrenceId,
-          _amount: amount,
+          _amountCents: amountCents,
           _paymentMethod: paymentMethod
         }
       }
@@ -3054,6 +4561,1866 @@ async function generateActionPreview(
       }
     }
 
+    case 'unassign_cleaner': {
+      let occurrenceId = args.occurrenceId as string | undefined
+      let booking: any = null
+
+      if (occurrenceId) {
+        const { data } = await supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, cleaner_id, series:booking_series(title, lead:extracted_leads(name)), cleaner:cleaners(full_name)`)
+          .eq('id', occurrenceId)
+          .eq('org_id', orgId)
+          .single()
+        booking = data
+      } else {
+        let query = supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, cleaner_id, series:booking_series(title, lead:extracted_leads(name)), cleaner:cleaners(full_name)`)
+          .eq('org_id', orgId)
+          .order('start_at', { ascending: true })
+          .limit(10)
+
+        if (args.jobDate) {
+          query = query.gte('start_at', args.jobDate + 'T00:00:00').lte('start_at', args.jobDate + 'T23:59:59')
+        }
+
+        const { data: bookings } = await query
+        if (bookings?.length) {
+          if (args.customerName) {
+            const search = (args.customerName as string).toLowerCase()
+            booking = bookings.find((b: any) =>
+              b.series?.lead?.name?.toLowerCase().includes(search)
+            ) || bookings[0]
+          } else {
+            booking = bookings[0]
+          }
+          occurrenceId = booking?.id
+        }
+      }
+
+      if (!booking || !occurrenceId) {
+        return { preview: {}, error: 'Could not find booking' }
+      }
+
+      const timezone = (ctx.org.timezone as string) || 'Australia/Sydney'
+
+      return {
+        preview: {
+          action: 'Unassign cleaner',
+          customer: booking.series?.lead?.name || 'Unknown',
+          jobDate: new Date(booking.start_at).toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone }),
+          currentCleaner: booking.cleaner?.full_name || 'Unassigned',
+          _occurrenceId: occurrenceId
+        }
+      }
+    }
+
+    case 'update_booking_address': {
+      let seriesId = args.seriesId as string | undefined
+      let series: any = null
+
+      if (seriesId) {
+        const { data } = await supabaseAdmin
+          .from('booking_series')
+          .select('id, service_address, service_lat, service_lng, lead:extracted_leads(name)')
+          .eq('id', seriesId)
+          .eq('org_id', orgId)
+          .single()
+        series = data
+      } else if (args.customerName) {
+        const { data: seriesList } = await supabaseAdmin
+          .from('booking_series')
+          .select('id, service_address, service_lat, service_lng, lead:extracted_leads(name)')
+          .eq('org_id', orgId)
+          .order('created_at', { ascending: false })
+          .limit(20)
+
+        if (seriesList?.length) {
+          const search = (args.customerName as string).toLowerCase()
+          series = seriesList.find((s: any) =>
+            s.lead?.name?.toLowerCase().includes(search)
+          ) || seriesList[0]
+          seriesId = series.id
+        }
+      }
+
+      if (!series || !seriesId) {
+        return { preview: {}, error: 'Could not find booking series' }
+      }
+
+      return {
+        preview: {
+          action: 'Update booking address',
+          customer: series.lead?.name || 'Unknown',
+          currentAddress: series.service_address || 'None',
+          newAddress: args.address,
+          _seriesId: seriesId,
+          _address: args.address,
+          _lat: args.latitude,
+          _lng: args.longitude
+        }
+      }
+    }
+
+    case 'update_booking_series': {
+      let seriesId = args.seriesId as string | undefined
+      let series: any = null
+
+      if (seriesId) {
+        const { data } = await supabaseAdmin
+          .from('booking_series')
+          .select('id, title, duration_minutes, rrule, until_date, occurrence_count, status, notes, lead:extracted_leads(name)')
+          .eq('id', seriesId)
+          .eq('org_id', orgId)
+          .single()
+        series = data
+      } else if (args.customerName) {
+        const { data: seriesList } = await supabaseAdmin
+          .from('booking_series')
+          .select('id, title, duration_minutes, rrule, until_date, occurrence_count, status, notes, lead:extracted_leads(name)')
+          .eq('org_id', orgId)
+          .order('created_at', { ascending: false })
+          .limit(20)
+
+        if (seriesList?.length) {
+          const search = (args.customerName as string).toLowerCase()
+          series = seriesList.find((s: any) =>
+            s.lead?.name?.toLowerCase().includes(search)
+          ) || seriesList[0]
+          seriesId = series.id
+        }
+      }
+
+      if (!series || !seriesId) {
+        return { preview: {}, error: 'Could not find booking series' }
+      }
+
+      const changes: string[] = []
+      if (args.title) changes.push(`Title -> ${args.title}`)
+      if (args.durationMinutes !== undefined) changes.push(`Duration -> ${args.durationMinutes} mins`)
+      if (args.repeatType) changes.push(`Repeat -> ${args.repeatType}`)
+      if (args.untilDate) changes.push(`Until -> ${args.untilDate}`)
+      if (args.occurrenceCount !== undefined) changes.push(`Occurrences -> ${args.occurrenceCount}`)
+      if (args.status) changes.push(`Status -> ${args.status}`)
+      if (args.notes) changes.push('Notes updated')
+      if (args.timezone) changes.push(`Timezone -> ${args.timezone}`)
+
+      if (changes.length === 0) {
+        return { preview: {}, error: 'No changes specified' }
+      }
+
+      const updates: Record<string, unknown> = {}
+      if (args.title !== undefined) updates.title = args.title
+      if (args.durationMinutes !== undefined) updates.duration_minutes = args.durationMinutes
+      if (args.repeatType !== undefined) updates.rrule = repeatTypeToRRule(args.repeatType as string)
+      if (args.untilDate !== undefined) updates.until_date = (args.untilDate as string) || null
+      if (args.occurrenceCount !== undefined) updates.occurrence_count = args.occurrenceCount || null
+      if (args.status !== undefined) updates.status = args.status
+      if (args.notes !== undefined) updates.notes = args.notes
+      if (args.timezone !== undefined) updates.timezone = args.timezone
+
+      return {
+        preview: {
+          action: 'Update booking series',
+          customer: series.lead?.name || 'Unknown',
+          changes: changes.join('; '),
+          _seriesId: seriesId,
+          _updates: updates
+        }
+      }
+    }
+
+    case 'set_payment_status': {
+      let occurrenceId = args.occurrenceId as string | undefined
+      let booking: any = null
+
+      if (occurrenceId) {
+        const { data } = await supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, payment_status, payment_amount_cents, series:booking_series(lead:extracted_leads(name), quote:quotes(total_inc_gst))`)
+          .eq('id', occurrenceId)
+          .eq('org_id', orgId)
+          .single()
+        booking = data
+      } else {
+        let query = supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, payment_status, payment_amount_cents, series:booking_series(lead:extracted_leads(name), quote:quotes(total_inc_gst))`)
+          .eq('org_id', orgId)
+          .order('start_at', { ascending: false })
+          .limit(10)
+
+        if (args.jobDate) {
+          query = query.gte('start_at', args.jobDate + 'T00:00:00').lte('start_at', args.jobDate + 'T23:59:59')
+        }
+
+        const { data: bookings } = await query
+        if (bookings?.length) {
+          if (args.customerName) {
+            const search = (args.customerName as string).toLowerCase()
+            booking = bookings.find((b: any) =>
+              b.series?.lead?.name?.toLowerCase().includes(search)
+            ) || bookings[0]
+          } else {
+            booking = bookings[0]
+          }
+          occurrenceId = booking?.id
+        }
+      }
+
+      if (!booking || !occurrenceId) {
+        return { preview: {}, error: 'Could not find booking' }
+      }
+
+      const amountFromArgs = typeof args.amountDollars === 'number'
+        ? Math.round((args.amountDollars as number) * 100)
+        : null
+      const quoteAmountCents = booking.series?.quote?.total_inc_gst
+        ? Math.round(booking.series.quote.total_inc_gst * 100)
+        : null
+      const amountCents = amountFromArgs ?? booking.payment_amount_cents ?? quoteAmountCents
+
+      const timezone = (ctx.org.timezone as string) || 'Australia/Sydney'
+
+      return {
+        preview: {
+          action: 'Update payment status',
+          customer: booking.series?.lead?.name || 'Unknown',
+          jobDate: new Date(booking.start_at).toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone }),
+          newStatus: args.paymentStatus,
+          amount: amountCents ? formatAmountCents(amountCents) : 'N/A',
+          _occurrenceId: occurrenceId,
+          _paymentStatus: args.paymentStatus,
+          _amountCents: amountCents,
+          _notes: args.notes
+        }
+      }
+    }
+
+    case 'send_payment_reminder_sms': {
+      let occurrenceId = args.occurrenceId as string | undefined
+      let booking: any = null
+
+      if (occurrenceId) {
+        const { data } = await supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, payment_amount_cents, payment_link, series:booking_series(lead:extracted_leads(name, phone_number, email), quote:quotes(share_token, total_inc_gst))`)
+          .eq('id', occurrenceId)
+          .eq('org_id', orgId)
+          .single()
+        booking = data
+      } else {
+        let query = supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, payment_amount_cents, payment_link, series:booking_series(lead:extracted_leads(name, phone_number, email), quote:quotes(share_token, total_inc_gst))`)
+          .eq('org_id', orgId)
+          .order('start_at', { ascending: false })
+          .limit(10)
+
+        if (args.jobDate) {
+          query = query.gte('start_at', args.jobDate + 'T00:00:00').lte('start_at', args.jobDate + 'T23:59:59')
+        }
+
+        const { data: bookings } = await query
+        if (bookings?.length) {
+          if (args.customerName) {
+            const search = (args.customerName as string).toLowerCase()
+            booking = bookings.find((b: any) =>
+              b.series?.lead?.name?.toLowerCase().includes(search)
+            ) || bookings[0]
+          } else {
+            booking = bookings[0]
+          }
+          occurrenceId = booking?.id
+        }
+      }
+
+      if (!booking || !occurrenceId) {
+        return { preview: {}, error: 'Could not find booking' }
+      }
+
+      const lead = booking.series?.lead
+      let phone = lead?.phone_number
+      if (!phone) {
+        return { preview: {}, error: 'Customer phone number not found' }
+      }
+
+      const paymentLink = booking.payment_link
+      if (!paymentLink) {
+        return { preview: {}, error: 'Payment link not found. Create a payment link first.' }
+      }
+
+      const quoteToken = booking.series?.quote?.share_token
+      const quoteLink = quoteToken ? buildQuoteShareUrl(quoteToken) : ''
+      const amountCents = booking.payment_amount_cents ??
+        (booking.series?.quote?.total_inc_gst ? Math.round(booking.series.quote.total_inc_gst * 100) : null)
+
+      if (!amountCents) {
+        return { preview: {}, error: 'Payment amount not found' }
+      }
+
+      let message = (args.message as string) || ''
+      let templateId: string | null = null
+      let templateTitle: string | null = null
+      let templateTone: string | null = null
+
+      if (!message) {
+        let templateQuery = supabaseAdmin
+          .from('payment_sms_templates')
+          .select('id, title, body, slug, tone, is_default')
+          .eq('org_id', orgId)
+          .order('is_default', { ascending: false })
+          .order('created_at', { ascending: true })
+          .limit(10)
+
+        if (args.templateId) {
+          templateQuery = templateQuery.eq('id', args.templateId)
+        } else if (args.templateSlug) {
+          templateQuery = templateQuery.eq('slug', args.templateSlug)
+        }
+
+        const { data: templates } = await templateQuery
+        const template = templates?.[0]
+        if (template?.body) {
+          templateId = template.id || null
+          templateTitle = template.title || null
+          templateTone = template.tone || null
+          const amountText = amountCents ? formatAmountCents(amountCents) : 'the agreed amount'
+          message = fillTemplate(template.body, {
+            name: lead?.name || 'there',
+            phone: phone,
+            number: phone,
+            amount: amountText,
+            payment_link: paymentLink,
+            stripe_payment_link: paymentLink,
+            quote_link: quoteLink
+          })
+        }
+      }
+
+      if (!message) {
+        return { preview: {}, error: 'Message or template is required' }
+      }
+
+      phone = normalizePhoneToE164AU(phone) || phone
+
+      return {
+        preview: {
+          action: 'Send payment reminder SMS',
+          customer: lead?.name || 'Unknown',
+          phone,
+          amount: formatAmountCents(amountCents),
+          template: templateTitle || (args.templateSlug as string) || null,
+          message,
+          _occurrenceId: occurrenceId,
+          _phone: phone,
+          _message: message,
+          _templateId: templateId,
+          _templateTone: templateTone,
+          _amountCents: amountCents
+        }
+      }
+    }
+
+    case 'send_review_reminder_sms': {
+      let occurrenceId = args.occurrenceId as string | undefined
+      let booking: any = null
+
+      if (occurrenceId) {
+        const { data } = await supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, series:booking_series(lead:extracted_leads(name, phone_number))`)
+          .eq('id', occurrenceId)
+          .eq('org_id', orgId)
+          .single()
+        booking = data
+      } else {
+        let query = supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, series:booking_series(lead:extracted_leads(name, phone_number))`)
+          .eq('org_id', orgId)
+          .order('start_at', { ascending: false })
+          .limit(10)
+
+        if (args.jobDate) {
+          query = query.gte('start_at', args.jobDate + 'T00:00:00').lte('start_at', args.jobDate + 'T23:59:59')
+        }
+
+        const { data: bookings } = await query
+        if (bookings?.length) {
+          if (args.customerName) {
+            const search = (args.customerName as string).toLowerCase()
+            booking = bookings.find((b: any) =>
+              b.series?.lead?.name?.toLowerCase().includes(search)
+            ) || bookings[0]
+          } else {
+            booking = bookings[0]
+          }
+          occurrenceId = booking?.id
+        }
+      }
+
+      if (!booking || !occurrenceId) {
+        return { preview: {}, error: 'Could not find booking' }
+      }
+
+      const lead = booking.series?.lead
+      let phone = lead?.phone_number
+      if (!phone) {
+        return { preview: {}, error: 'Customer phone number not found' }
+      }
+
+      const reviewLink = (args.reviewLink as string) || getReviewLink()
+
+      let message = (args.message as string) || ''
+      let templateId: string | null = null
+      let templateTitle: string | null = null
+      let templateTone: string | null = null
+
+      if (!message) {
+        let templateQuery = supabaseAdmin
+          .from('review_sms_templates')
+          .select('id, title, body, slug, tone, is_default')
+          .eq('org_id', orgId)
+          .order('is_default', { ascending: false })
+          .order('created_at', { ascending: true })
+          .limit(10)
+
+        if (args.templateId) {
+          templateQuery = templateQuery.eq('id', args.templateId)
+        } else if (args.templateSlug) {
+          templateQuery = templateQuery.eq('slug', args.templateSlug)
+        }
+
+        const { data: templates } = await templateQuery
+        const template = templates?.[0]
+        if (template?.body) {
+          templateId = template.id || null
+          templateTitle = template.title || null
+          templateTone = template.tone || null
+          message = fillTemplate(template.body, {
+            name: lead?.name || 'there',
+            review_link: reviewLink
+          })
+        }
+      }
+
+      if (!message) {
+        return { preview: {}, error: 'Message or template is required' }
+      }
+
+      phone = normalizePhoneToE164AU(phone) || phone
+
+      return {
+        preview: {
+          action: 'Send review reminder SMS',
+          customer: lead?.name || 'Unknown',
+          phone,
+          template: templateTitle || (args.templateSlug as string) || null,
+          message,
+          reviewLink,
+          _occurrenceId: occurrenceId,
+          _phone: phone,
+          _message: message,
+          _templateId: templateId,
+          _templateTone: templateTone
+        }
+      }
+    }
+
+    case 'resume_marketing_loop':
+    case 'send_marketing_now':
+    case 'set_marketing_step': {
+      let leadId = args.leadId as string | undefined
+      let customerName = 'Unknown'
+
+      if (args.customerName && !leadId) {
+        const { data: leads } = await supabaseAdmin
+          .from('extracted_leads')
+          .select('id, name')
+          .eq('org_id', orgId)
+          .ilike('name', `%${args.customerName}%`)
+          .limit(1)
+
+        if (leads?.length) {
+          leadId = leads[0].id
+          customerName = leads[0].name
+        }
+      }
+
+      if (!leadId) {
+        return { preview: {}, error: 'Could not find customer' }
+      }
+
+      const journeyType = (args.journeyType as string) || (toolName === 'send_marketing_now' ? 'sms' : 'both')
+      const step = args.step as number | undefined
+
+      if (toolName === 'set_marketing_step' && (step === undefined || step === null)) {
+        return { preview: {}, error: 'Step number is required' }
+      }
+
+      return {
+        preview: {
+          action: toolName === 'resume_marketing_loop'
+            ? 'Resume marketing loop'
+            : toolName === 'send_marketing_now'
+              ? 'Send marketing now'
+              : 'Set marketing step',
+          customer: customerName,
+          journeyType,
+          step,
+          _leadId: leadId,
+          _journeyType: journeyType,
+          _step: step
+        }
+      }
+    }
+
+    case 'reschedule_booking': {
+      const newDateTime = args.newDateTime as string | undefined
+      if (!newDateTime) {
+        return { preview: {}, error: 'New date/time is required' }
+      }
+
+      let occurrenceId = args.occurrenceId as string | undefined
+      let booking: any = null
+
+      if (occurrenceId) {
+        const { data } = await supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, end_at, series:booking_series(title, duration_minutes, lead:extracted_leads(name))`)
+          .eq('id', occurrenceId)
+          .eq('org_id', orgId)
+          .single()
+        booking = data
+      } else {
+        let query = supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, end_at, series:booking_series(title, duration_minutes, lead:extracted_leads(name))`)
+          .eq('org_id', orgId)
+          .order('start_at', { ascending: false })
+          .limit(10)
+
+        if (args.currentDate) {
+          query = query.gte('start_at', args.currentDate + 'T00:00:00').lte('start_at', args.currentDate + 'T23:59:59')
+        }
+
+        const { data: bookings } = await query
+        if (bookings?.length) {
+          if (args.customerName) {
+            const search = (args.customerName as string).toLowerCase()
+            booking = bookings.find((b: any) =>
+              b.series?.lead?.name?.toLowerCase().includes(search)
+            ) || bookings[0]
+          } else {
+            booking = bookings[0]
+          }
+          occurrenceId = booking?.id
+        }
+      }
+
+      if (!booking || !occurrenceId) {
+        return { preview: {}, error: 'Could not find booking' }
+      }
+
+      const timezone = (ctx.org.timezone as string) || 'Australia/Sydney'
+      const oldStart = new Date(booking.start_at)
+      const oldDate = oldStart.toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone })
+      const oldTime = oldStart.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', timeZone: timezone })
+
+      const newStart = new Date(newDateTime)
+      const newDate = newStart.toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone })
+      const newTime = newStart.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', timeZone: timezone })
+
+      const durationMs = booking.end_at
+        ? new Date(booking.end_at).getTime() - new Date(booking.start_at).getTime()
+        : ((booking.series?.duration_minutes as number) || 120) * 60 * 1000
+
+      return {
+        preview: {
+          action: 'Reschedule booking',
+          customer: booking.series?.lead?.name || 'Unknown',
+          jobTitle: booking.series?.title || 'Cleaning',
+          oldDate,
+          oldTime,
+          newDate,
+          newTime,
+          _occurrenceId: occurrenceId,
+          _newDateTime: newDateTime,
+          _durationMs: durationMs
+        }
+      }
+    }
+
+    case 'extract_lead_info': {
+      const timezone = (ctx.org.timezone as string) || 'Australia/Sydney'
+      let emailId = args.emailId as string | undefined
+      let emailRow: any = null
+
+      if (emailId) {
+        const { data } = await supabaseAdmin
+          .from('dialpad_emails')
+          .select('id, subject, from_email, created_at')
+          .eq('org_id', orgId)
+          .eq('id', emailId)
+          .maybeSingle()
+        emailRow = data
+      } else {
+        let query = supabaseAdmin
+          .from('dialpad_emails')
+          .select('id, subject, from_email, created_at')
+          .eq('org_id', orgId)
+          .order('created_at', { ascending: false })
+          .limit(20)
+
+        if (args.fromEmail) {
+          query = query.ilike('from_email', `%${args.fromEmail}%`)
+        }
+        if (args.subjectContains) {
+          query = query.ilike('subject', `%${args.subjectContains}%`)
+        }
+
+        const { data: emails } = await query
+        if (emails && emails.length > 0) {
+          emailRow = emails[0]
+          emailId = emailRow.id
+        }
+      }
+
+      if (!emailRow || !emailId) {
+        return { preview: {}, error: 'No matching email found' }
+      }
+
+      return {
+        preview: {
+          action: 'Extract lead info from email',
+          emailId,
+          from: emailRow.from_email || 'Unknown',
+          subject: emailRow.subject || 'No subject',
+          receivedAt: emailRow.created_at
+            ? new Date(emailRow.created_at).toLocaleString('en-AU', { timeZone: timezone })
+            : null,
+          _emailId: emailId
+        }
+      }
+    }
+
+    case 'delete_lead': {
+      let leadQuery = supabaseAdmin
+        .from('extracted_leads')
+        .select('id, name, email, phone_number, status')
+        .eq('org_id', orgId)
+        .limit(20)
+
+      if (args.leadId) {
+        leadQuery = leadQuery.eq('id', args.leadId)
+      } else if (args.customerName) {
+        leadQuery = leadQuery.ilike('name', `%${args.customerName}%`)
+      }
+
+      const { data: leads } = await leadQuery
+
+      if (!leads || leads.length === 0) {
+        return { preview: {}, error: 'Lead not found' }
+      }
+
+      const lead = leads[0]
+
+      const { count: quotesCount } = await supabaseAdmin
+        .from('quotes')
+        .select('id', { count: 'exact', head: true })
+        .eq('org_id', orgId)
+        .eq('lead_id', lead.id)
+
+      const { count: seriesCount } = await supabaseAdmin
+        .from('booking_series')
+        .select('id', { count: 'exact', head: true })
+        .eq('org_id', orgId)
+        .eq('lead_id', lead.id)
+
+      return {
+        preview: {
+          action: 'Delete lead',
+          customer: lead.name || 'Unknown',
+          email: lead.email,
+          phone: lead.phone_number,
+          status: lead.status || 'No status',
+          relatedQuotes: quotesCount || 0,
+          relatedBookings: seriesCount || 0,
+          _leadId: lead.id
+        }
+      }
+    }
+
+    case 'send_lead_sms': {
+      let leadQuery = supabaseAdmin
+        .from('extracted_leads')
+        .select('id, name, phone_number')
+        .eq('org_id', orgId)
+        .limit(1)
+
+      if (args.leadId) {
+        leadQuery = leadQuery.eq('id', args.leadId)
+      } else if (args.customerName) {
+        leadQuery = leadQuery.ilike('name', `%${args.customerName}%`)
+      }
+
+      const { data: leads } = await leadQuery
+      if (!leads || leads.length === 0) {
+        return { preview: {}, error: 'Lead not found' }
+      }
+
+      const lead = leads[0]
+      let phone = (args.phoneNumber as string) || lead.phone_number
+      if (!phone) {
+        return { preview: {}, error: 'Lead has no phone number' }
+      }
+
+      let message = (args.message as string) || ''
+      let templateTitle: string | null = null
+
+      if (!message) {
+        let templateQuery = supabaseAdmin
+          .from('sms_templates')
+          .select('id, title, body, slug, is_default')
+          .order('is_default', { ascending: false })
+          .order('created_at', { ascending: true })
+          .limit(10)
+
+        if (args.templateId) {
+          templateQuery = templateQuery.eq('id', args.templateId)
+        } else if (args.templateSlug) {
+          templateQuery = templateQuery.eq('slug', args.templateSlug)
+        }
+
+        const { data: templates } = await templateQuery
+        const template = templates?.[0]
+        if (template?.body) {
+          templateTitle = template.title || null
+          message = fillTemplate(template.body, {
+            name: lead.name || 'there'
+          })
+        }
+      }
+
+      if (!message) {
+        return { preview: {}, error: 'Message or template is required' }
+      }
+
+      phone = normalizePhoneToE164AU(phone) || phone
+
+      return {
+        preview: {
+          action: 'Send lead SMS',
+          customer: lead.name || 'Unknown',
+          phone,
+          template: templateTitle || (args.templateSlug as string) || null,
+          message,
+          _phone: phone,
+          _leadId: lead.id,
+          _message: message
+        }
+      }
+    }
+
+    case 'send_quote_sms': {
+      let quoteQuery = supabaseAdmin
+        .from('quotes')
+        .select('id, quote_number, customer_name, customer_phone, total_inc_gst, gst, service, bedrooms, bathrooms, addons, custom_addons, address, share_token, lead_id, lead:extracted_leads(name, phone_number)')
+        .eq('org_id', orgId)
+        .order('created_at', { ascending: false })
+        .limit(20)
+
+      if (args.quoteId) {
+        quoteQuery = quoteQuery.eq('id', args.quoteId)
+      }
+
+      const { data: quotes } = await quoteQuery
+
+      if (!quotes || quotes.length === 0) {
+        return { preview: {}, error: 'No quote found' }
+      }
+
+      let quote = quotes[0]
+      if (args.customerName && !args.quoteId) {
+        const search = (args.customerName as string).toLowerCase()
+        quote = quotes.find((q: any) =>
+          q.customer_name?.toLowerCase().includes(search) ||
+          q.lead?.name?.toLowerCase().includes(search)
+        ) || quote
+      }
+
+      let phone = (args.phoneNumber as string) || quote.customer_phone || quote.lead?.phone_number
+      if (!phone) {
+        return { preview: {}, error: 'Customer phone number not found' }
+      }
+
+      const shareUrl = quote.share_token ? buildQuoteShareUrl(quote.share_token) : null
+
+      const humanizeAddonKey = (value: string) => {
+        const mapped = ADDON_DISPLAY_NAMES[value]
+        if (mapped) return mapped
+        return value
+          .replace(/_/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .replace(/\b\w/g, (char) => char.toUpperCase())
+      }
+
+      const formatAddons = (addons?: string[] | null, customAddons?: any[] | null) => {
+        const parts: string[] = []
+        if (Array.isArray(addons)) {
+          addons.forEach((item) => {
+            if (typeof item === 'string' && item.trim() !== '') {
+              parts.push(humanizeAddonKey(item.trim()))
+            }
+          })
+        }
+        if (Array.isArray(customAddons)) {
+          customAddons.forEach((addon) => {
+            if (addon?.name && addon.name.trim() !== '') {
+              parts.push(addon.name.trim())
+            }
+          })
+        }
+        return parts.join(', ')
+      }
+
+      let message = (args.message as string) || ''
+      if (!message) {
+        const customerLabel = quote.customer_name || quote.lead?.name || 'there'
+        const addressLabel = quote.address || ''
+        const serviceLabel = `${quote.service || 'Cleaning'} clean`
+        const roomsLabel = `${quote.bedrooms || 0} bedroom, ${quote.bathrooms || 0} bathroom`
+        const addonsLabel = formatAddons(quote.addons, quote.custom_addons)
+        const gstLabel = formatCurrencyAUD(quote.gst)
+        const totalLabel = formatCurrencyAUD(quote.total_inc_gst)
+        const addonsLine = addonsLabel ? `Add-ons: ${addonsLabel}` : ''
+        const addressLine = addressLabel ? `Here is your quote for ${addressLabel}.` : 'Here is your quote.'
+
+        message = [
+          `Hey ${customerLabel},`,
+          addressLine,
+          `${serviceLabel} - ${roomsLabel}.`,
+          addonsLine,
+          '',
+          'Price breakdown',
+          `GST: ${gstLabel}`,
+          `Total: ${totalLabel}`,
+          '',
+          'Here is the link to the full quote + payment details:',
+          shareUrl || '',
+          '',
+          'Thanks, get back to me ASAP so I can book you in.'
+        ]
+          .filter((line) => line.trim() !== '')
+          .join('\n')
+      }
+
+      phone = normalizePhoneToE164AU(phone) || phone
+
+      return {
+        preview: {
+          action: 'Send quote SMS',
+          customer: quote.customer_name || quote.lead?.name || 'Unknown',
+          phone,
+          quoteNumber: quote.quote_number || quote.id.slice(0, 8),
+          shareUrl,
+          message,
+          _phone: phone,
+          _quoteId: quote.id,
+          _leadId: quote.lead_id,
+          _message: message
+        }
+      }
+    }
+
+    case 'delete_quote': {
+      let quoteQuery = supabaseAdmin
+        .from('quotes')
+        .select('id, quote_number, customer_name, total_inc_gst, lead:extracted_leads(name)')
+        .eq('org_id', orgId)
+        .order('created_at', { ascending: false })
+        .limit(20)
+
+      if (args.quoteId) {
+        quoteQuery = quoteQuery.eq('id', args.quoteId)
+      } else if (args.quoteNumber) {
+        quoteQuery = quoteQuery.eq('quote_number', args.quoteNumber)
+      }
+
+      const { data: quotes } = await quoteQuery
+
+      if (!quotes || quotes.length === 0) {
+        return { preview: {}, error: 'No quote found' }
+      }
+
+      let quote = quotes[0]
+      if (args.customerName && !args.quoteId && !args.quoteNumber) {
+        const search = (args.customerName as string).toLowerCase()
+        quote = quotes.find((q: any) =>
+          q.customer_name?.toLowerCase().includes(search) ||
+          q.lead?.name?.toLowerCase().includes(search)
+        ) || quote
+      }
+
+      return {
+        preview: {
+          action: 'Delete quote',
+          quoteNumber: quote.quote_number || quote.id.slice(0, 8),
+          customer: quote.customer_name || quote.lead?.name || 'Unknown',
+          total: formatCurrencyAUD(quote.total_inc_gst),
+          _quoteId: quote.id
+        }
+      }
+    }
+
+    case 'create_cleaner': {
+      const fullName = args.fullName as string
+      if (!fullName) {
+        return { preview: {}, error: 'Cleaner name is required' }
+      }
+
+      const phoneRaw = args.phone as string | undefined
+      const phone = phoneRaw ? (normalizePhoneToE164AU(phoneRaw) || phoneRaw) : undefined
+
+      return {
+        preview: {
+          action: 'Create cleaner',
+          name: fullName,
+          phone: phone || 'Not provided',
+          email: args.email || 'Not provided',
+          active: args.active !== undefined ? Boolean(args.active) : true,
+          _phone: phone
+        }
+      }
+    }
+
+    case 'update_cleaner': {
+      let cleanerId = args.cleanerId as string | undefined
+      let cleaner: any = null
+
+      if (cleanerId) {
+        const { data } = await supabaseAdmin
+          .from('cleaners')
+          .select('id, full_name, phone, email, active')
+          .eq('id', cleanerId)
+          .eq('org_id', orgId)
+          .single()
+        cleaner = data
+      } else if (args.cleanerName) {
+        const { data: cleaners } = await supabaseAdmin
+          .from('cleaners')
+          .select('id, full_name, phone, email, active')
+          .eq('org_id', orgId)
+          .ilike('full_name', `%${args.cleanerName}%`)
+          .limit(1)
+        if (cleaners?.length) {
+          cleaner = cleaners[0]
+          cleanerId = cleaner.id
+        }
+      }
+
+      if (!cleaner || !cleanerId) {
+        return { preview: {}, error: 'Cleaner not found' }
+      }
+
+      const changes: string[] = []
+      const updates: Record<string, unknown> = {}
+
+      if (args.fullName !== undefined) {
+        updates.full_name = args.fullName
+        changes.push(`Name -> ${args.fullName}`)
+      }
+      if (args.phone !== undefined) {
+        const normalized = normalizePhoneToE164AU(args.phone) || args.phone
+        updates.phone = normalized
+        changes.push(`Phone -> ${normalized}`)
+      }
+      if (args.email !== undefined) {
+        updates.email = args.email
+        changes.push(`Email -> ${args.email}`)
+      }
+      if (args.baseLocationText !== undefined) {
+        updates.base_location_text = args.baseLocationText
+        changes.push('Base location updated')
+      }
+      if (args.baseLat !== undefined) updates.base_lat = args.baseLat
+      if (args.baseLng !== undefined) updates.base_lng = args.baseLng
+      if (args.abn !== undefined) updates.abn = args.abn
+      if (args.bankAccountName !== undefined) updates.bank_account_name = args.bankAccountName
+      if (args.bankBsb !== undefined) updates.bank_bsb = args.bankBsb
+      if (args.bankAccountNumber !== undefined) updates.bank_account_number = args.bankAccountNumber
+      if (args.minBookingMinutes !== undefined) updates.min_booking_minutes = args.minBookingMinutes
+      if (args.noticeHours !== undefined) updates.notice_hours = args.noticeHours
+      if (args.cancellationPolicy !== undefined) updates.cancellation_policy = args.cancellationPolicy
+      if (args.hasTransport !== undefined) updates.has_transport = args.hasTransport
+      if (args.transportType !== undefined) updates.transport_type = args.transportType
+      if (args.maxTravelKm !== undefined) updates.max_travel_km = args.maxTravelKm
+      if (args.canTransportEquipment !== undefined) updates.can_transport_equipment = args.canTransportEquipment
+      if (args.publicLiabilityPolicyNumber !== undefined) updates.public_liability_policy_number = args.publicLiabilityPolicyNumber
+      if (args.publicLiabilityExpiry !== undefined) updates.public_liability_expiry = args.publicLiabilityExpiry
+      if (args.teamSize !== undefined) updates.team_size = args.teamSize
+      if (args.rates !== undefined) updates.rates = args.rates
+      if (args.availability !== undefined) updates.availability = args.availability
+      if (args.active !== undefined) {
+        updates.active = args.active
+        changes.push(`Active -> ${args.active ? 'Yes' : 'No'}`)
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return { preview: {}, error: 'No changes specified' }
+      }
+
+      return {
+        preview: {
+          action: 'Update cleaner',
+          cleaner: cleaner.full_name || 'Cleaner',
+          changes: changes.join('; '),
+          _cleanerId: cleanerId,
+          _updates: updates
+        }
+      }
+    }
+
+    case 'delete_cleaner': {
+      let cleanerId = args.cleanerId as string | undefined
+      let cleaner: any = null
+
+      if (cleanerId) {
+        const { data } = await supabaseAdmin
+          .from('cleaners')
+          .select('id, full_name, phone, email')
+          .eq('id', cleanerId)
+          .eq('org_id', orgId)
+          .single()
+        cleaner = data
+      } else if (args.cleanerName) {
+        const { data: cleaners } = await supabaseAdmin
+          .from('cleaners')
+          .select('id, full_name, phone, email')
+          .eq('org_id', orgId)
+          .ilike('full_name', `%${args.cleanerName}%`)
+          .limit(1)
+        if (cleaners?.length) {
+          cleaner = cleaners[0]
+          cleanerId = cleaner.id
+        }
+      }
+
+      if (!cleaner || !cleanerId) {
+        return { preview: {}, error: 'Cleaner not found' }
+      }
+
+      return {
+        preview: {
+          action: 'Delete cleaner',
+          cleaner: cleaner.full_name || 'Cleaner',
+          phone: cleaner.phone || 'N/A',
+          email: cleaner.email || 'N/A',
+          _cleanerId: cleanerId
+        }
+      }
+    }
+
+    case 'create_cleaner_review': {
+      let occurrenceId = args.occurrenceId as string | undefined
+      let cleanerId = args.cleanerId as string | undefined
+      let booking: any = null
+      let cleaner: any = null
+
+      if (args.cleanerName && !cleanerId) {
+        const { data: cleaners } = await supabaseAdmin
+          .from('cleaners')
+          .select('id, full_name')
+          .eq('org_id', orgId)
+          .ilike('full_name', `%${args.cleanerName}%`)
+          .limit(1)
+        if (cleaners?.length) {
+          cleaner = cleaners[0]
+          cleanerId = cleaner.id
+        }
+      }
+
+      if (occurrenceId) {
+        const { data } = await supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, status, cleaner_id, series:booking_series(title, lead:extracted_leads(name)), cleaner:cleaners(id, full_name)`)
+          .eq('id', occurrenceId)
+          .eq('org_id', orgId)
+          .single()
+        booking = data
+      } else if (cleanerId) {
+        const { data: bookings } = await supabaseAdmin
+          .from('booking_occurrences')
+          .select(`id, start_at, status, cleaner_id, series:booking_series(title, lead:extracted_leads(name)), cleaner:cleaners(id, full_name)`)
+          .eq('org_id', orgId)
+          .eq('status', 'completed')
+          .eq('cleaner_id', cleanerId)
+          .order('start_at', { ascending: false })
+          .limit(1)
+        if (bookings?.length) {
+          booking = bookings[0]
+          occurrenceId = booking.id
+        }
+      }
+
+      if (!booking || !occurrenceId) {
+        return { preview: {}, error: 'Completed booking not found for review' }
+      }
+
+      cleanerId = cleanerId || booking.cleaner_id || booking.cleaner?.id
+      const cleanerName = cleaner?.full_name || booking.cleaner?.full_name || 'Cleaner'
+
+      if (!cleanerId) {
+        return { preview: {}, error: 'Cleaner not found for this booking' }
+      }
+
+      const rating = args.rating as number
+      if (!rating || rating < 1 || rating > 5) {
+        return { preview: {}, error: 'Rating must be between 1 and 5' }
+      }
+
+      const timezone = (ctx.org.timezone as string) || 'Australia/Sydney'
+
+      return {
+        preview: {
+          action: 'Create cleaner review',
+          customer: booking.series?.lead?.name || 'Unknown',
+          cleaner: cleanerName,
+          jobDate: new Date(booking.start_at).toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone }),
+          rating,
+          notes: args.notes || 'None',
+          _occurrenceId: occurrenceId,
+          _cleanerId: cleanerId,
+          _rating: rating,
+          _notes: args.notes
+        }
+      }
+    }
+
+    case 'update_cleaner_payout': {
+      let payoutId = args.payoutId as string | undefined
+      let payout: any = null
+
+      if (payoutId) {
+        const { data } = await supabaseAdmin
+          .from('cleaner_payouts')
+          .select(`id, payout_amount, notes, paid_at, occurrence_id, cleaner:cleaners(full_name), occurrence:booking_occurrences(start_at, series:booking_series(title, lead:extracted_leads(name)))`)
+          .eq('id', payoutId)
+          .eq('org_id', orgId)
+          .single()
+        payout = data
+      } else if (args.occurrenceId) {
+        const { data } = await supabaseAdmin
+          .from('cleaner_payouts')
+          .select(`id, payout_amount, notes, paid_at, occurrence_id, cleaner:cleaners(full_name), occurrence:booking_occurrences(start_at, series:booking_series(title, lead:extracted_leads(name)))`)
+          .eq('occurrence_id', args.occurrenceId)
+          .eq('org_id', orgId)
+          .maybeSingle()
+        payout = data
+        payoutId = payout?.id
+      }
+
+      if (!payout || !payoutId) {
+        return { preview: {}, error: 'Payout record not found' }
+      }
+
+      const changes: string[] = []
+      const updates: Record<string, unknown> = {}
+      if (args.payoutAmount !== undefined) {
+        updates.payout_amount = args.payoutAmount
+        changes.push(`Payout -> $${Number(args.payoutAmount).toFixed(2)}`)
+      }
+      if (args.notes !== undefined) {
+        updates.notes = args.notes
+        changes.push('Notes updated')
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return { preview: {}, error: 'No changes specified' }
+      }
+
+      const timezone = (ctx.org.timezone as string) || 'Australia/Sydney'
+      const jobDate = payout.occurrence?.start_at
+        ? new Date(payout.occurrence.start_at).toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone })
+        : 'Unknown'
+
+      return {
+        preview: {
+          action: 'Update cleaner payout',
+          cleaner: payout.cleaner?.full_name || 'Cleaner',
+          customer: payout.occurrence?.series?.lead?.name || 'Unknown',
+          jobDate,
+          changes: changes.join('; '),
+          _payoutId: payoutId,
+          _updates: updates
+        }
+      }
+    }
+
+    case 'mark_cleaner_payout_paid': {
+      let payoutId = args.payoutId as string | undefined
+      let payout: any = null
+
+      if (payoutId) {
+        const { data } = await supabaseAdmin
+          .from('cleaner_payouts')
+          .select(`id, paid_at, occurrence_id, cleaner:cleaners(full_name), occurrence:booking_occurrences(start_at, series:booking_series(lead:extracted_leads(name)))`)
+          .eq('id', payoutId)
+          .eq('org_id', orgId)
+          .single()
+        payout = data
+      } else if (args.occurrenceId) {
+        const { data } = await supabaseAdmin
+          .from('cleaner_payouts')
+          .select(`id, paid_at, occurrence_id, cleaner:cleaners(full_name), occurrence:booking_occurrences(start_at, series:booking_series(lead:extracted_leads(name)))`)
+          .eq('occurrence_id', args.occurrenceId)
+          .eq('org_id', orgId)
+          .maybeSingle()
+        payout = data
+        payoutId = payout?.id
+      }
+
+      if (!payout || !payoutId) {
+        return { preview: {}, error: 'Payout record not found' }
+      }
+
+      const markPaid = args.markPaid !== undefined ? Boolean(args.markPaid) : true
+      const timezone = (ctx.org.timezone as string) || 'Australia/Sydney'
+      const jobDate = payout.occurrence?.start_at
+        ? new Date(payout.occurrence.start_at).toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: timezone })
+        : 'Unknown'
+
+      return {
+        preview: {
+          action: markPaid ? 'Mark payout paid' : 'Mark payout unpaid',
+          cleaner: payout.cleaner?.full_name || 'Cleaner',
+          customer: payout.occurrence?.series?.lead?.name || 'Unknown',
+          jobDate,
+          currentStatus: payout.paid_at ? 'Paid' : 'Unpaid',
+          _payoutId: payoutId,
+          _markPaid: markPaid
+        }
+      }
+    }
+
+    case 'create_todo': {
+      const title = args.title as string
+      if (!title) {
+        return { preview: {}, error: 'Todo title is required' }
+      }
+
+      return {
+        preview: {
+          action: 'Create todo',
+          title,
+          description: args.description || 'None',
+          dueDate: args.dueDate || 'Not set',
+          rollOver: args.rollOver !== undefined ? Boolean(args.rollOver) : true
+        }
+      }
+    }
+
+    case 'update_todo': {
+      const todoId = args.todoId as string
+      if (!todoId) {
+        return { preview: {}, error: 'Todo ID is required' }
+      }
+
+      const { data: todo } = await supabaseAdmin
+        .from('todos')
+        .select('id, title, description, is_completed, due_date')
+        .eq('id', todoId)
+        .eq('org_id', orgId)
+        .single()
+
+      if (!todo) {
+        return { preview: {}, error: 'Todo not found' }
+      }
+
+      const changes: string[] = []
+      const updates: Record<string, unknown> = {}
+      if (args.title !== undefined) {
+        updates.title = args.title
+        changes.push(`Title -> ${args.title}`)
+      }
+      if (args.description !== undefined) {
+        updates.description = args.description
+        changes.push('Description updated')
+      }
+      if (args.isCompleted !== undefined) {
+        updates.is_completed = args.isCompleted
+        changes.push(args.isCompleted ? 'Mark complete' : 'Mark incomplete')
+      }
+      if (args.dueDate !== undefined) {
+        updates.due_date = args.dueDate
+        changes.push(`Due date -> ${args.dueDate || 'None'}`)
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return { preview: {}, error: 'No changes specified' }
+      }
+
+      return {
+        preview: {
+          action: 'Update todo',
+          title: todo.title,
+          changes: changes.join('; '),
+          _todoId: todoId,
+          _updates: updates
+        }
+      }
+    }
+
+    case 'delete_todo': {
+      const todoId = args.todoId as string
+      if (!todoId) {
+        return { preview: {}, error: 'Todo ID is required' }
+      }
+
+      const { data: todo } = await supabaseAdmin
+        .from('todos')
+        .select('id, title, description')
+        .eq('id', todoId)
+        .eq('org_id', orgId)
+        .single()
+
+      if (!todo) {
+        return { preview: {}, error: 'Todo not found' }
+      }
+
+      return {
+        preview: {
+          action: 'Delete todo',
+          title: todo.title,
+          description: todo.description || 'None',
+          _todoId: todoId
+        }
+      }
+    }
+
+    case 'send_team_invite': {
+      const email = (args.email as string | undefined)?.trim()
+      if (!email) {
+        return { preview: {}, error: 'Email is required' }
+      }
+      const role = (args.role as string) || 'staff'
+
+      return {
+        preview: {
+          action: 'Send team invite',
+          email,
+          role
+        }
+      }
+    }
+
+    case 'update_member_role': {
+      let memberId = args.memberId as string | undefined
+      let member: any = null
+
+      if (!memberId && args.email) {
+        const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
+        const matchedUser = existingUsers?.users?.find(
+          (u) => u.email?.toLowerCase() === (args.email as string).toLowerCase()
+        )
+        if (matchedUser) {
+          const { data } = await supabaseAdmin
+            .from('organization_members')
+            .select('id, role, display_name')
+            .eq('org_id', orgId)
+            .eq('user_id', matchedUser.id)
+            .maybeSingle()
+          member = data
+          memberId = data?.id
+        }
+      } else if (memberId) {
+        const { data } = await supabaseAdmin
+          .from('organization_members')
+          .select('id, role, display_name')
+          .eq('org_id', orgId)
+          .eq('id', memberId)
+          .maybeSingle()
+        member = data
+      }
+
+      if (!member || !memberId) {
+        return { preview: {}, error: 'Member not found' }
+      }
+
+      const newRole = args.role as string
+      if (!newRole) {
+        return { preview: {}, error: 'Role is required' }
+      }
+
+      return {
+        preview: {
+          action: 'Update member role',
+          member: member.display_name || args.email || memberId,
+          currentRole: member.role || 'unknown',
+          newRole,
+          _memberId: memberId,
+          _role: newRole
+        }
+      }
+    }
+
+    case 'remove_member': {
+      let memberId = args.memberId as string | undefined
+      let member: any = null
+
+      if (!memberId && args.email) {
+        const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
+        const matchedUser = existingUsers?.users?.find(
+          (u) => u.email?.toLowerCase() === (args.email as string).toLowerCase()
+        )
+        if (matchedUser) {
+          const { data } = await supabaseAdmin
+            .from('organization_members')
+            .select('id, role, display_name')
+            .eq('org_id', orgId)
+            .eq('user_id', matchedUser.id)
+            .maybeSingle()
+          member = data
+          memberId = data?.id
+        }
+      } else if (memberId) {
+        const { data } = await supabaseAdmin
+          .from('organization_members')
+          .select('id, role, display_name')
+          .eq('org_id', orgId)
+          .eq('id', memberId)
+          .maybeSingle()
+        member = data
+      }
+
+      if (!member || !memberId) {
+        return { preview: {}, error: 'Member not found' }
+      }
+
+      return {
+        preview: {
+          action: 'Remove member',
+          member: member.display_name || args.email || memberId,
+          role: member.role || 'unknown',
+          _memberId: memberId
+        }
+      }
+    }
+
+    case 'revoke_invite': {
+      let inviteId = args.inviteId as string | undefined
+      let invite: any = null
+
+      if (inviteId) {
+        const { data } = await supabaseAdmin
+          .from('organization_invites')
+          .select('id, email, role, expires_at')
+          .eq('org_id', orgId)
+          .eq('id', inviteId)
+          .maybeSingle()
+        invite = data
+      } else if (args.email) {
+        const { data } = await supabaseAdmin
+          .from('organization_invites')
+          .select('id, email, role, expires_at')
+          .eq('org_id', orgId)
+          .eq('email', args.email)
+          .is('accepted_at', null)
+          .maybeSingle()
+        invite = data
+        inviteId = data?.id
+      }
+
+      if (!invite || !inviteId) {
+        return { preview: {}, error: 'Invite not found' }
+      }
+
+      return {
+        preview: {
+          action: 'Revoke invite',
+          email: invite.email,
+          role: invite.role,
+          expiresAt: invite.expires_at,
+          _inviteId: inviteId
+        }
+      }
+    }
+
+    case 'update_integration': {
+      const provider = args.provider as string
+      if (!provider) {
+        return { preview: {}, error: 'Provider is required' }
+      }
+
+      const { data: existing } = await supabaseAdmin
+        .from('organization_integrations')
+        .select('id, enabled, config')
+        .eq('org_id', orgId)
+        .eq('provider', provider)
+        .maybeSingle()
+
+      const enabled = args.enabled !== undefined ? Boolean(args.enabled) : existing?.enabled
+      const config = args.config !== undefined ? args.config : existing?.config
+      const configKeys = config && typeof config === 'object' ? Object.keys(config as Record<string, unknown>) : []
+
+      return {
+        preview: {
+          action: 'Update integration',
+          provider,
+          enabled: enabled === undefined ? 'Unchanged' : enabled ? 'Enabled' : 'Disabled',
+          configKeys: configKeys.length ? configKeys.join(', ') : 'None',
+          _provider: provider,
+          _enabled: args.enabled,
+          _config: args.config
+        }
+      }
+    }
+
+    case 'update_org_settings': {
+      const updates: Record<string, unknown> = {}
+      const changes: string[] = []
+
+      if (args.businessName !== undefined) {
+        updates.business_name = args.businessName
+        changes.push(`Business name -> ${args.businessName}`)
+      }
+      if (args.abn !== undefined) {
+        updates.business_abn = args.abn
+        changes.push('ABN updated')
+      }
+      if (args.phone !== undefined) {
+        updates.business_phone = args.phone
+        changes.push('Phone updated')
+      }
+      if (args.email !== undefined) {
+        updates.business_email = args.email
+        changes.push('Email updated')
+      }
+      if (args.operatingName !== undefined) {
+        updates.business_operating_name = args.operatingName
+        changes.push('Operating name updated')
+      }
+      if (args.timezone !== undefined) {
+        updates.timezone = args.timezone
+        changes.push(`Timezone -> ${args.timezone}`)
+      }
+      if (args.clientRate !== undefined) {
+        updates.default_client_hourly_rate = args.clientRate
+        changes.push(`Client rate -> ${args.clientRate}`)
+      }
+      if (args.cleanerRate !== undefined) {
+        updates.default_cleaner_hourly_rate = args.cleanerRate
+        changes.push(`Cleaner rate -> ${args.cleanerRate}`)
+      }
+      if (args.gstRate !== undefined) {
+        updates.gst_rate = args.gstRate
+        changes.push(`GST rate -> ${args.gstRate}`)
+      }
+      if (args.discountPct !== undefined) {
+        updates.default_discount_pct = args.discountPct
+        changes.push(`Discount -> ${args.discountPct}`)
+      }
+      if (args.depositPct !== undefined) {
+        updates.default_deposit_pct = args.depositPct
+        changes.push(`Deposit -> ${args.depositPct}`)
+      }
+      if (args.logoUrl !== undefined) {
+        updates.logo_url = args.logoUrl
+        changes.push('Logo updated')
+      }
+      if (args.primaryColor !== undefined) {
+        updates.primary_color = args.primaryColor
+        changes.push('Primary color updated')
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return { preview: {}, error: 'No changes specified' }
+      }
+
+      return {
+        preview: {
+          action: 'Update organization settings',
+          changes: changes.join('; '),
+          _updates: updates
+        }
+      }
+    }
+
+    case 'update_automation_setting': {
+      const automationType = args.automationType as string
+      if (!automationType) {
+        return { preview: {}, error: 'Automation type is required' }
+      }
+
+      return {
+        preview: {
+          action: 'Update automation setting',
+          automationType,
+          enabled: args.enabled !== undefined ? (args.enabled ? 'Enabled' : 'Disabled') : 'Unchanged',
+          configKeys: args.config && typeof args.config === 'object'
+            ? Object.keys(args.config as Record<string, unknown>).join(', ')
+            : 'None',
+          _automationType: automationType,
+          _enabled: args.enabled,
+          _config: args.config
+        }
+      }
+    }
+
+    case 'update_template': {
+      const templateType = args.templateType as string
+      const templateId = args.templateId as string
+      if (!templateType || !templateId) {
+        return { preview: {}, error: 'Template type and ID are required' }
+      }
+
+      const table = templateType === 'marketing_sms'
+        ? 'marketing_sms_templates'
+        : templateType === 'marketing_email'
+          ? 'marketing_email_templates'
+          : templateType === 'payment_sms'
+            ? 'payment_sms_templates'
+            : 'review_sms_templates'
+
+      const { data: template } = await supabaseAdmin
+        .from(table)
+        .select('id, title, subject, body')
+        .eq('org_id', orgId)
+        .eq('id', templateId)
+        .maybeSingle()
+
+      const updates: Record<string, unknown> = {}
+      const changes: string[] = []
+      if (args.title !== undefined) {
+        updates.title = args.title
+        changes.push('Title updated')
+      }
+      if (args.subject !== undefined) {
+        updates.subject = args.subject
+        changes.push('Subject updated')
+      }
+      if (args.body !== undefined) {
+        updates.body = args.body
+        changes.push('Body updated')
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return { preview: {}, error: 'No changes specified' }
+      }
+
+      return {
+        preview: {
+          action: 'Update template',
+          templateType,
+          title: template?.title || 'Template',
+          changes: changes.join('; '),
+          _table: table,
+          _templateId: templateId,
+          _updates: updates
+        }
+      }
+    }
+
+    case 'set_default_template': {
+      const templateType = args.templateType as string
+      const templateId = args.templateId as string
+      if (!templateType || !templateId) {
+        return { preview: {}, error: 'Template type and ID are required' }
+      }
+
+      const table = templateType === 'payment_sms' ? 'payment_sms_templates' : 'review_sms_templates'
+
+      const { data: template } = await supabaseAdmin
+        .from(table)
+        .select('id, title')
+        .eq('org_id', orgId)
+        .eq('id', templateId)
+        .maybeSingle()
+
+      return {
+        preview: {
+          action: 'Set default template',
+          templateType,
+          title: template?.title || 'Template',
+          _table: table,
+          _templateId: templateId
+        }
+      }
+    }
+
+    case 'create_sms_template': {
+      const body = (args.body as string | undefined)?.trim()
+      if (!body) {
+        return { preview: {}, error: 'Template body is required' }
+      }
+      const title = (args.title as string | undefined)?.trim() || 'Custom follow-up'
+
+      return {
+        preview: {
+          action: 'Create SMS template',
+          title,
+          body
+        }
+      }
+    }
+
+    case 'create_workflow': {
+      const name = (args.name as string | undefined)?.trim()
+      const triggerType = args.triggerType as string | undefined
+      if (!name || !triggerType) {
+        return { preview: {}, error: 'Workflow name and trigger type are required' }
+      }
+
+      const steps = Array.isArray(args.steps) ? args.steps : []
+
+      return {
+        preview: {
+          action: 'Create workflow',
+          name,
+          triggerType,
+          steps: steps.length
+        }
+      }
+    }
+
+    case 'update_workflow': {
+      const workflowId = args.workflowId as string
+      if (!workflowId) {
+        return { preview: {}, error: 'Workflow ID is required' }
+      }
+
+      const { data: workflow } = await supabaseAdmin
+        .from('workflows')
+        .select('id, name, trigger_type')
+        .eq('org_id', orgId)
+        .eq('id', workflowId)
+        .maybeSingle()
+
+      if (!workflow) {
+        return { preview: {}, error: 'Workflow not found' }
+      }
+
+      const changes: string[] = []
+      if (args.name !== undefined) changes.push('Name updated')
+      if (args.description !== undefined) changes.push('Description updated')
+      if (args.enabled !== undefined) changes.push(args.enabled ? 'Enabled' : 'Disabled')
+      if (args.triggerType !== undefined) changes.push(`Trigger -> ${args.triggerType}`)
+      if (args.triggerConfig !== undefined) changes.push('Trigger config updated')
+      if (args.steps !== undefined) changes.push('Steps updated')
+
+      if (changes.length === 0) {
+        return { preview: {}, error: 'No changes specified' }
+      }
+
+      return {
+        preview: {
+          action: 'Update workflow',
+          name: workflow.name,
+          changes: changes.join('; '),
+          _workflowId: workflowId
+        }
+      }
+    }
+
+    case 'delete_workflow': {
+      const workflowId = args.workflowId as string
+      if (!workflowId) {
+        return { preview: {}, error: 'Workflow ID is required' }
+      }
+
+      const { data: workflow } = await supabaseAdmin
+        .from('workflows')
+        .select('id, name')
+        .eq('org_id', orgId)
+        .eq('id', workflowId)
+        .maybeSingle()
+
+      if (!workflow) {
+        return { preview: {}, error: 'Workflow not found' }
+      }
+
+      return {
+        preview: {
+          action: 'Delete workflow',
+          name: workflow.name,
+          _workflowId: workflowId
+        }
+      }
+    }
+
+    case 'summarize_call': {
+      let callId = args.callId as string | undefined
+      let call: any = null
+
+      if (callId) {
+        const { data } = await supabaseAdmin
+          .from('dialpad_calls')
+          .select('call_id, direction, duration, created_at, external_number')
+          .eq('org_id', orgId)
+          .eq('call_id', callId)
+          .maybeSingle()
+        call = data
+        if (!call) {
+          const { data: fallback } = await supabaseAdmin
+            .from('dialpad_calls')
+            .select('call_id, direction, duration, created_at, external_number')
+            .eq('org_id', orgId)
+            .eq('id', callId)
+            .maybeSingle()
+          call = fallback
+          callId = fallback?.call_id || callId
+        }
+      } else if (args.customerName) {
+        const { data: leads } = await supabaseAdmin
+          .from('extracted_leads')
+          .select('phone_number, name')
+          .eq('org_id', orgId)
+          .ilike('name', `%${args.customerName}%`)
+          .limit(1)
+        const lead = leads?.[0]
+        if (lead?.phone_number) {
+          const { data } = await supabaseAdmin
+            .from('dialpad_calls')
+            .select('call_id, direction, duration, created_at, external_number')
+            .eq('org_id', orgId)
+            .eq('external_number', lead.phone_number)
+            .order('created_at', { ascending: false })
+            .limit(1)
+          if (data?.length) {
+            call = data[0]
+            callId = call.call_id
+          }
+        }
+      }
+
+      if (!callId) {
+        return { preview: {}, error: 'Call ID is required' }
+      }
+
+      return {
+        preview: {
+          action: 'Summarize call',
+          callId,
+          direction: call?.direction || 'unknown',
+          duration: call?.duration ? `${Math.floor(call.duration / 60)}m ${call.duration % 60}s` : 'Unknown',
+          date: call?.created_at ? new Date(call.created_at).toLocaleString('en-AU') : 'Unknown',
+          _callId: callId
+        }
+      }
+    }
+
+    case 'sync_emails': {
+      return {
+        preview: {
+          action: 'Sync Outlook emails',
+          detail: 'Fetch latest inbox and sent messages'
+        }
+      }
+    }
+
     default:
       return { preview: {}, error: `Unknown action: ${toolName}` }
   }
@@ -3067,7 +6434,8 @@ async function executeAction(
   ctx: OrgContext,
   toolName: string,
   args: Record<string, unknown>,
-  preview: Record<string, unknown>
+  preview: Record<string, unknown>,
+  requestAuthHeader?: string | null
 ): Promise<{ success: boolean; message?: string; error?: string }> {
   const { supabaseAdmin, orgId } = ctx
 
@@ -3083,12 +6451,14 @@ async function executeAction(
       // Call the quote-email edge function
       const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
       const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
 
       const response = await fetch(`${supabaseUrl}/functions/v1/quote-email`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceKey}`,
+          'Authorization': authorizationHeader,
+          'apikey': serviceKey,
           'X-Org-Id': orgId
         },
         body: JSON.stringify({ quoteId, emailOverride: email })
@@ -3103,7 +6473,8 @@ async function executeAction(
     }
 
     case 'send_sms': {
-      const phone = preview._phone as string
+      const phoneRaw = preview._phone as string
+      const phone = normalizePhoneToE164AU(phoneRaw) || phoneRaw
       const message = args.message as string
 
       if (!phone || !message) {
@@ -3113,12 +6484,13 @@ async function executeAction(
       // Call the dialpad-send-sms edge function
       const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
       const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
 
       const response = await fetch(`${supabaseUrl}/functions/v1/dialpad-send-sms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceKey}`,
+          'Authorization': authorizationHeader,
           'X-Org-Id': orgId
         },
         body: JSON.stringify({ phone_number: phone, message })
@@ -3182,27 +6554,37 @@ async function executeAction(
         return { success: false, error: 'Missing lead ID or status' }
       }
 
-      const { error } = await supabaseAdmin
-        .from('extracted_leads')
-        .update({ status: newStatus })
-        .eq('id', leadId)
-        .eq('org_id', orgId)
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
 
-      if (error) {
-        return { success: false, error: error.message }
+      const response = await fetch(`${supabaseUrl}/functions/v1/update-lead-status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({ leadId, status: newStatus })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        return { success: false, error: `Failed to update lead status: ${errorText}` }
       }
 
-      return { success: true, message: `${preview.customer}'s status has been updated to "${newStatus}"` }
+      return { success: true, message: `${preview.customer}'s status has been updated to \"${newStatus}\"` }
     }
 
     // === NEW ACTION EXECUTORS ===
 
     case 'create_lead': {
       const name = args.name as string
-      const phone = args.phone as string | undefined
+      const phoneRaw = args.phone as string | undefined
+      const phone = normalizePhoneToE164AU(phoneRaw) || phoneRaw
       const email = args.email as string | undefined
       const notes = args.notes as string | undefined
-      const status = (args.status as string) || 'Inquiry'
+      const status = (args.status as string) || 'Unanswered'
 
       const { data: newLead, error } = await supabaseAdmin
         .from('extracted_leads')
@@ -3298,12 +6680,13 @@ async function executeAction(
 
       const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
       const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
 
       const response = await fetch(`${supabaseUrl}/functions/v1/create-booking-series`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceKey}`,
+          'Authorization': authorizationHeader,
           'X-Org-Id': orgId
         },
         body: JSON.stringify({
@@ -3332,7 +6715,8 @@ async function executeAction(
     }
 
     case 'initiate_call': {
-      const phone = preview._phone as string
+      const phoneRaw = preview._phone as string
+      const phone = normalizePhoneToE164AU(phoneRaw) || phoneRaw
 
       if (!phone) {
         return { success: false, error: 'Phone number is required' }
@@ -3340,12 +6724,13 @@ async function executeAction(
 
       const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
       const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
 
       const response = await fetch(`${supabaseUrl}/functions/v1/dialpad-initiate-call`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceKey}`,
+          'Authorization': authorizationHeader,
           'X-Org-Id': orgId
         },
         body: JSON.stringify({ phone_number: phone })
@@ -3359,8 +6744,12 @@ async function executeAction(
       return { success: true, message: `Initiated call to ${preview.customer} at ${phone}` }
     }
 
-    case 'create_payment_link': {
+        case 'create_payment_link': {
       const amountCents = preview._amountCents as number
+      const occurrenceId = preview._occurrenceId as string | undefined
+      const quoteId = preview._quoteId as string | undefined
+      const shareToken = preview._shareToken as string | undefined
+      const description = (preview._description as string) || (args.description as string) || `Payment for ${preview.customer}`
 
       if (!amountCents) {
         return { success: false, error: 'Amount is required' }
@@ -3368,21 +6757,33 @@ async function executeAction(
 
       const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
       const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const siteUrl = getSiteUrl()
+      let successUrl = `${siteUrl}/payment-success`
+      let cancelUrl = `${siteUrl}/payment-cancel`
+      if (shareToken) {
+        successUrl = `${siteUrl}?quote=${shareToken}&payment_status=success`
+        cancelUrl = `${siteUrl}?quote=${shareToken}&payment_status=cancelled`
+      }
 
       const response = await fetch(`${supabaseUrl}/functions/v1/create-payment-link`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceKey}`,
+          'Authorization': authorizationHeader,
           'X-Org-Id': orgId
         },
         body: JSON.stringify({
           amount_cents: amountCents,
           currency: 'aud',
-          description: args.description || `Payment for ${preview.customer}`,
-          quoteId: preview._quoteId,
+          description,
+          occurrenceId,
+          quoteId,
           customerName: preview.customer,
-          customerEmail: preview._customerEmail
+          customerEmail: preview._customerEmail,
+          success_url: successUrl,
+          cancel_url: cancelUrl
         })
       })
 
@@ -3392,35 +6793,61 @@ async function executeAction(
       }
 
       const result = await response.json()
+      const linkUrl = result?.url
+
+      if (occurrenceId && linkUrl) {
+        const { error: updateError } = await supabaseAdmin
+          .from('booking_occurrences')
+          .update({
+            payment_link: linkUrl,
+            payment_status: 'invoice_sent',
+            payment_amount_cents: amountCents
+          })
+          .eq('id', occurrenceId)
+          .eq('org_id', orgId)
+
+        if (updateError) {
+          return { success: false, error: updateError.message }
+        }
+      }
+
       return {
         success: true,
-        message: `Created payment link for ${preview.amount}: ${result.url}`
+        message: linkUrl ? `Created payment link for ${preview.customer}: ${linkUrl}` : 'Created payment link'
       }
     }
 
     case 'start_marketing_loop':
     case 'pause_marketing_loop':
-    case 'cancel_marketing_loop': {
+    case 'cancel_marketing_loop':
+    case 'resume_marketing_loop':
+    case 'send_marketing_now':
+    case 'set_marketing_step': {
       const leadId = preview._leadId as string
-      const journeyType = preview._journeyType as string || 'both'
+      const journeyType = (preview._journeyType as string) || (toolName === 'send_marketing_now' ? 'sms' : 'both')
       const action = toolName === 'start_marketing_loop' ? 'start'
         : toolName === 'pause_marketing_loop' ? 'pause'
-        : 'cancel'
+        : toolName === 'cancel_marketing_loop' ? 'cancel'
+        : toolName === 'resume_marketing_loop' ? 'resume'
+        : toolName === 'send_marketing_now' ? 'send_now'
+        : 'set_step'
 
       const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
       const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
 
       const response = await fetch(`${supabaseUrl}/functions/v1/marketing-loop-actions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceKey}`,
+          'Authorization': authorizationHeader,
           'X-Org-Id': orgId
         },
         body: JSON.stringify({
           action,
           leadId,
-          journeyType
+          journeyType,
+          ...(action === 'set_step' ? { step: preview._step || args.step } : {})
         })
       })
 
@@ -3429,31 +6856,40 @@ async function executeAction(
         return { success: false, error: `Failed to ${action} marketing: ${errorText}` }
       }
 
-      const actionPastTense = action === 'start' ? 'started' : action === 'pause' ? 'paused' : 'cancelled'
+      const actionPastTense = action === 'start'
+        ? 'started'
+        : action === 'pause'
+          ? 'paused'
+          : action === 'cancel'
+            ? 'cancelled'
+            : action === 'resume'
+              ? 'resumed'
+              : action === 'send_now'
+                ? 'sent'
+                : 'updated'
       return {
         success: true,
-        message: `Marketing automation ${actionPastTense} for ${preview.customer}`
+        message: `Marketing automation ${actionPastTense}${action === 'set_step' ? ` to step ${preview._step || args.step}` : ''} for ${preview.customer}`
       }
     }
 
-    case 'reschedule_booking': {
+            case 'reschedule_booking': {
       const occurrenceId = preview._occurrenceId as string
       const newDateTime = preview._newDateTime as string
+      const durationMs = (preview._durationMs as number) || 2 * 60 * 60 * 1000
 
       if (!occurrenceId || !newDateTime) {
         return { success: false, error: 'Missing booking ID or new date/time' }
       }
 
       const newDate = new Date(newDateTime)
-      const durationMs = 2 * 60 * 60 * 1000 // Default 2 hours
       const endAt = new Date(newDate.getTime() + durationMs)
 
       const { error } = await supabaseAdmin
         .from('booking_occurrences')
         .update({
           start_at: newDate.toISOString(),
-          end_at: endAt.toISOString(),
-          original_start_at: newDate.toISOString()
+          end_at: endAt.toISOString()
         })
         .eq('id', occurrenceId)
         .eq('org_id', orgId)
@@ -3469,6 +6905,7 @@ async function executeAction(
     }
 
     case 'cancel_booking_series': {
+
       const seriesId = preview._seriesId as string
 
       if (!seriesId) {
@@ -3517,7 +6954,8 @@ async function executeAction(
       const updates: Record<string, unknown> = {}
 
       if (preview._newPhone) {
-        updates.phone_number = preview._newPhone
+        const normalized = normalizePhoneToE164AU(preview._newPhone) || preview._newPhone
+        updates.phone_number = normalized
       }
       if (preview._newEmail) {
         updates.email = preview._newEmail
@@ -3551,30 +6989,13 @@ async function executeAction(
       }
     }
 
-    case 'edit_quote': {
+            case 'edit_quote': {
       const quoteId = preview._quoteId as string
+      const updates = preview._updates as Record<string, unknown> | undefined
 
-      if (!quoteId) {
-        return { success: false, error: 'Missing quote ID' }
+      if (!quoteId || !updates) {
+        return { success: false, error: 'Missing quote data' }
       }
-
-      const updates: Record<string, unknown> = {}
-
-      if (preview._newAddons) {
-        updates.addons = preview._newAddons
-      }
-      if (preview._newDiscountPercentage !== undefined) {
-        updates.discount_percentage = preview._newDiscountPercentage
-      }
-      if (preview._newAddress) {
-        updates.address = preview._newAddress
-      }
-      if (preview._newNotes) {
-        updates.notes = preview._newNotes
-      }
-
-      // TODO: Recalculate pricing if addons or discount changed
-      // For now, just update the fields
 
       const { error } = await supabaseAdmin
         .from('quotes')
@@ -3586,28 +7007,48 @@ async function executeAction(
         return { success: false, error: error.message }
       }
 
+      const leadId = preview._leadId as string | undefined
+      const customerUpdates = preview._customerUpdates as Record<string, unknown> | undefined
+      if (leadId && customerUpdates && (customerUpdates.name || customerUpdates.email || customerUpdates.phone_number)) {
+        const leadPayload: Record<string, unknown> = {}
+        if (customerUpdates.name) leadPayload.name = customerUpdates.name
+        if (customerUpdates.email) leadPayload.email = customerUpdates.email
+        if (customerUpdates.phone_number) leadPayload.phone_number = customerUpdates.phone_number
+        if (Object.keys(leadPayload).length > 0) {
+          await supabaseAdmin
+            .from('extracted_leads')
+            .update(leadPayload)
+            .eq('id', leadId)
+            .eq('org_id', orgId)
+        }
+      }
+
       return {
         success: true,
-        message: `Updated quote #${preview.quoteNumber} for ${preview.customer}`
+        message: `Updated quote #${preview.quoteNumber || quoteId.slice(0, 8)} for ${preview.customer || 'customer'}`
       }
     }
 
     case 'mark_booking_paid': {
       const occurrenceId = preview._occurrenceId as string
-      const amount = preview._amount as number
-      const paymentMethod = preview._paymentMethod as string
+      const amountCents = preview._amountCents as number | null
+      const paymentMethod = preview._paymentMethod as string | undefined
 
       if (!occurrenceId) {
         return { success: false, error: 'Missing booking ID' }
       }
 
+      const paymentNotes = paymentMethod
+        ? `Marked paid (${paymentMethod}) on ${new Date().toLocaleString('en-AU')}`
+        : `Marked paid on ${new Date().toLocaleString('en-AU')}`
+
       const { error } = await supabaseAdmin
         .from('booking_occurrences')
         .update({
           payment_status: 'paid',
-          payment_method: paymentMethod,
-          payment_amount: amount,
-          paid_at: new Date().toISOString()
+          payment_amount_cents: amountCents || null,
+          payment_paid_at: new Date().toISOString(),
+          payment_notes: paymentNotes
         })
         .eq('id', occurrenceId)
         .eq('org_id', orgId)
@@ -3618,11 +7059,11 @@ async function executeAction(
 
       return {
         success: true,
-        message: `Recorded ${preview.amount} ${paymentMethod} payment for ${preview.customer}'s job on ${preview.jobDate}`
+        message: `Recorded payment for ${preview.customer}'s job on ${preview.jobDate}`
       }
     }
 
-    case 'update_booking': {
+case 'update_booking': {
       const occurrenceId = preview._occurrenceId as string
       const seriesId = preview._seriesId as string
 
@@ -3664,6 +7105,991 @@ async function executeAction(
         success: true,
         message: `Updated booking for ${preview.customer} on ${preview.jobDate}`
       }
+    }
+
+    case 'extract_lead_info': {
+      const emailId = preview._emailId as string
+      if (!emailId) {
+        return { success: false, error: 'Missing email ID' }
+      }
+
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/extract-lead-info`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({ email_id: emailId })
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || !result?.success) {
+        return { success: false, error: result?.error || 'Failed to extract lead' }
+      }
+
+      return {
+        success: true,
+        message: `Extracted lead from email ${emailId}`
+      }
+    }
+
+    case 'delete_lead': {
+      const leadId = preview._leadId as string
+      if (!leadId) {
+        return { success: false, error: 'Missing lead ID' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('extracted_leads')
+        .delete()
+        .eq('id', leadId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Deleted lead ${preview.customer || ''}`.trim() }
+    }
+
+    case 'send_lead_sms': {
+      const phoneRaw = preview._phone as string
+      const phone = normalizePhoneToE164AU(phoneRaw) || phoneRaw
+      const message = preview._message as string
+      const leadId = preview._leadId as string
+
+      if (!phone || !message) {
+        return { success: false, error: 'Missing phone or message' }
+      }
+
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({ phone_number: phone, message })
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || !result?.success) {
+        return { success: false, error: result?.error || 'Failed to send SMS' }
+      }
+
+      const sentAtIso = new Date().toISOString()
+      if (leadId) {
+        await supabaseAdmin
+          .from('extracted_leads')
+          .update({ last_text_date: sentAtIso, last_text_body: message })
+          .eq('id', leadId)
+          .eq('org_id', orgId)
+      }
+
+      return { success: true, message: `SMS sent successfully to ${preview.customer || 'lead'}` }
+    }
+
+    case 'send_quote_sms': {
+      const phoneRaw = preview._phone as string
+      const phone = normalizePhoneToE164AU(phoneRaw) || phoneRaw
+      const message = preview._message as string
+
+      if (!phone || !message) {
+        return { success: false, error: 'Missing phone or message' }
+      }
+
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({ phone_number: phone, message })
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || !result?.success) {
+        return { success: false, error: result?.error || 'Failed to send SMS' }
+      }
+
+      return { success: true, message: `Quote SMS sent to ${preview.customer || 'customer'}` }
+    }
+
+    case 'delete_quote': {
+      const quoteId = preview._quoteId as string
+      if (!quoteId) {
+        return { success: false, error: 'Missing quote ID' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('quotes')
+        .delete()
+        .eq('id', quoteId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Deleted quote for ${preview.customer || 'customer'}` }
+    }
+
+    case 'unassign_cleaner': {
+      const occurrenceId = preview._occurrenceId as string
+      if (!occurrenceId) {
+        return { success: false, error: 'Missing booking ID' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('booking_occurrences')
+        .update({ cleaner_id: null, assigned_at: null })
+        .eq('id', occurrenceId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Cleaner unassigned for ${preview.customer}'s job on ${preview.jobDate}` }
+    }
+
+    case 'update_booking_address': {
+      const seriesId = preview._seriesId as string
+      if (!seriesId) {
+        return { success: false, error: 'Missing booking series ID' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('booking_series')
+        .update({
+          service_address: preview._address || null,
+          service_lat: preview._lat ?? null,
+          service_lng: preview._lng ?? null
+        })
+        .eq('id', seriesId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Updated booking address for ${preview.customer}` }
+    }
+
+    case 'update_booking_series': {
+      const seriesId = preview._seriesId as string
+      const updates = preview._updates as Record<string, unknown> | undefined
+
+      if (!seriesId || !updates) {
+        return { success: false, error: 'Missing booking series data' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('booking_series')
+        .update(updates)
+        .eq('id', seriesId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Updated booking series for ${preview.customer}` }
+    }
+
+    case 'set_payment_status': {
+      const occurrenceId = preview._occurrenceId as string
+      const paymentStatus = preview._paymentStatus as string
+      const amountCents = preview._amountCents as number | null
+      const notes = preview._notes as string | undefined
+
+      if (!occurrenceId || !paymentStatus) {
+        return { success: false, error: 'Missing booking ID or payment status' }
+      }
+
+      const updates: Record<string, unknown> = {
+        payment_status: paymentStatus
+      }
+      if (amountCents !== null && amountCents !== undefined) {
+        updates.payment_amount_cents = amountCents
+      }
+      if (paymentStatus === 'paid') {
+        updates.payment_paid_at = new Date().toISOString()
+        updates.payment_notes = notes || `Marked paid manually on ${new Date().toLocaleString('en-AU')}`
+      } else {
+        updates.payment_paid_at = null
+        if (notes) updates.payment_notes = notes
+      }
+
+      const { error } = await supabaseAdmin
+        .from('booking_occurrences')
+        .update(updates)
+        .eq('id', occurrenceId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Payment status updated for ${preview.customer}` }
+    }
+
+    case 'send_payment_reminder_sms': {
+      const phoneRaw = preview._phone as string
+      const phone = normalizePhoneToE164AU(phoneRaw) || phoneRaw
+      const message = preview._message as string
+      const occurrenceId = preview._occurrenceId as string
+
+      if (!phone || !message || !occurrenceId) {
+        return { success: false, error: 'Missing SMS details' }
+      }
+
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({ phone_number: phone, message })
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || !result?.success) {
+        return { success: false, error: result?.error || 'Failed to send SMS' }
+      }
+
+      const sentAt = new Date().toISOString()
+      await supabaseAdmin
+        .from('payment_sms_logs')
+        .insert({
+          org_id: orgId,
+          occurrence_id: occurrenceId,
+          template_id: preview._templateId || null,
+          body: message,
+          tone: preview._templateTone || null,
+          amount_cents: preview._amountCents || null,
+          sent_at: sentAt
+        })
+
+      return { success: true, message: `Payment reminder sent to ${preview.customer}` }
+    }
+
+    case 'send_review_reminder_sms': {
+      const phoneRaw = preview._phone as string
+      const phone = normalizePhoneToE164AU(phoneRaw) || phoneRaw
+      const message = preview._message as string
+      const occurrenceId = preview._occurrenceId as string
+
+      if (!phone || !message || !occurrenceId) {
+        return { success: false, error: 'Missing SMS details' }
+      }
+
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({ phone_number: phone, message })
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || !result?.success) {
+        return { success: false, error: result?.error || 'Failed to send SMS' }
+      }
+
+      const sentAt = new Date().toISOString()
+      await supabaseAdmin
+        .from('review_sms_logs')
+        .insert({
+          org_id: orgId,
+          occurrence_id: occurrenceId,
+          template_id: preview._templateId || null,
+          body: message,
+          tone: preview._templateTone || null,
+          sent_at: sentAt
+        })
+
+      return { success: true, message: `Review reminder sent to ${preview.customer}` }
+    }
+
+    case 'create_cleaner': {
+      const fullName = args.fullName as string
+      if (!fullName) {
+        return { success: false, error: 'Cleaner name is required' }
+      }
+
+      const payload: Record<string, unknown> = {
+        org_id: orgId,
+        full_name: fullName
+      }
+
+      const phoneRaw = args.phone as string | undefined
+      const phone = phoneRaw ? (normalizePhoneToE164AU(phoneRaw) || phoneRaw) : undefined
+
+      if (phone !== undefined) payload.phone = phone
+      if (args.email !== undefined) payload.email = args.email
+      if (args.baseLocationText !== undefined) payload.base_location_text = args.baseLocationText
+      if (args.baseLat !== undefined) payload.base_lat = args.baseLat
+      if (args.baseLng !== undefined) payload.base_lng = args.baseLng
+      if (args.abn !== undefined) payload.abn = args.abn
+      if (args.bankAccountName !== undefined) payload.bank_account_name = args.bankAccountName
+      if (args.bankBsb !== undefined) payload.bank_bsb = args.bankBsb
+      if (args.bankAccountNumber !== undefined) payload.bank_account_number = args.bankAccountNumber
+      if (args.minBookingMinutes !== undefined) payload.min_booking_minutes = args.minBookingMinutes
+      if (args.noticeHours !== undefined) payload.notice_hours = args.noticeHours
+      if (args.cancellationPolicy !== undefined) payload.cancellation_policy = args.cancellationPolicy
+      if (args.hasTransport !== undefined) payload.has_transport = args.hasTransport
+      if (args.transportType !== undefined) payload.transport_type = args.transportType
+      if (args.maxTravelKm !== undefined) payload.max_travel_km = args.maxTravelKm
+      if (args.canTransportEquipment !== undefined) payload.can_transport_equipment = args.canTransportEquipment
+      if (args.publicLiabilityPolicyNumber !== undefined) payload.public_liability_policy_number = args.publicLiabilityPolicyNumber
+      if (args.publicLiabilityExpiry !== undefined) payload.public_liability_expiry = args.publicLiabilityExpiry
+      if (args.teamSize !== undefined) payload.team_size = args.teamSize
+      if (args.rates !== undefined) payload.rates = args.rates
+      if (args.availability !== undefined) payload.availability = args.availability
+      if (args.active !== undefined) payload.active = args.active
+
+      const { error } = await supabaseAdmin
+        .from('cleaners')
+        .insert(payload)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Created cleaner ${fullName}` }
+    }
+
+    case 'update_cleaner': {
+      const cleanerId = preview._cleanerId as string
+      const updates = preview._updates as Record<string, unknown> | undefined
+
+      if (!cleanerId || !updates) {
+        return { success: false, error: 'Missing cleaner data' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('cleaners')
+        .update(updates)
+        .eq('id', cleanerId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Updated cleaner ${preview.cleaner || ''}`.trim() }
+    }
+
+    case 'delete_cleaner': {
+      const cleanerId = preview._cleanerId as string
+      if (!cleanerId) {
+        return { success: false, error: 'Missing cleaner ID' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('cleaners')
+        .delete()
+        .eq('id', cleanerId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Deleted cleaner ${preview.cleaner || ''}`.trim() }
+    }
+
+    case 'create_cleaner_review': {
+      const occurrenceId = preview._occurrenceId as string
+      const cleanerId = preview._cleanerId as string
+      const rating = preview._rating as number
+      const notes = preview._notes as string | undefined
+
+      if (!occurrenceId || !cleanerId || !rating) {
+        return { success: false, error: 'Missing review details' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('cleaner_job_reviews')
+        .insert({
+          org_id: orgId,
+          occurrence_id: occurrenceId,
+          cleaner_id: cleanerId,
+          rating,
+          notes: notes || null
+        })
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Saved review for ${preview.cleaner}` }
+    }
+
+    case 'update_cleaner_payout': {
+      const payoutId = preview._payoutId as string
+      const updates = preview._updates as Record<string, unknown> | undefined
+
+      if (!payoutId || !updates) {
+        return { success: false, error: 'Missing payout data' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('cleaner_payouts')
+        .update(updates)
+        .eq('id', payoutId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Updated payout for ${preview.cleaner || 'cleaner'}` }
+    }
+
+    case 'mark_cleaner_payout_paid': {
+      const payoutId = preview._payoutId as string
+      const markPaid = preview._markPaid as boolean
+
+      if (!payoutId) {
+        return { success: false, error: 'Missing payout ID' }
+      }
+
+      const updates = {
+        paid_at: markPaid ? new Date().toISOString() : null,
+        paid_by: markPaid ? 'admin' : null
+      }
+
+      const { error } = await supabaseAdmin
+        .from('cleaner_payouts')
+        .update(updates)
+        .eq('id', payoutId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: markPaid ? 'Payout marked as paid' : 'Payout marked as unpaid' }
+    }
+
+    case 'create_todo': {
+      const title = args.title as string
+      if (!title) {
+        return { success: false, error: 'Todo title is required' }
+      }
+
+      const payload = {
+        org_id: orgId,
+        type: 'manual',
+        title,
+        description: (args.description as string | undefined) || null,
+        is_completed: false,
+        auto_generated: false,
+        roll_over: args.rollOver !== undefined ? Boolean(args.rollOver) : true,
+        due_date: (args.dueDate as string | undefined) || null
+      }
+
+      const { error } = await supabaseAdmin
+        .from('todos')
+        .insert(payload)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Todo created: ${title}` }
+    }
+
+    case 'update_todo': {
+      const todoId = preview._todoId as string
+      const updates = preview._updates as Record<string, unknown> | undefined
+
+      if (!todoId || !updates) {
+        return { success: false, error: 'Missing todo data' }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'is_completed')) {
+        const isCompleted = Boolean(updates.is_completed)
+        updates.completed_at = isCompleted ? new Date().toISOString() : null
+      }
+
+      const { error } = await supabaseAdmin
+        .from('todos')
+        .update(updates)
+        .eq('id', todoId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: 'Todo updated' }
+    }
+
+    case 'delete_todo': {
+      const todoId = preview._todoId as string
+      if (!todoId) {
+        return { success: false, error: 'Missing todo ID' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('todos')
+        .delete()
+        .eq('id', todoId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: 'Todo deleted' }
+    }
+
+    case 'send_team_invite': {
+      const email = (args.email as string | undefined)?.trim()
+      if (!email) {
+        return { success: false, error: 'Email is required' }
+      }
+      const role = (args.role as string) || 'staff'
+
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/send-invite`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({ email, role })
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || result?.error) {
+        return { success: false, error: result?.error || 'Failed to send invite' }
+      }
+
+      return { success: true, message: `Invite sent to ${email}` }
+    }
+
+    case 'update_member_role': {
+      const memberId = preview._memberId as string
+      const role = preview._role as string
+
+      if (!memberId || !role) {
+        return { success: false, error: 'Missing member data' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('organization_members')
+        .update({ role })
+        .eq('id', memberId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Member role updated to ${role}` }
+    }
+
+    case 'remove_member': {
+      const memberId = preview._memberId as string
+      if (!memberId) {
+        return { success: false, error: 'Missing member ID' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('organization_members')
+        .delete()
+        .eq('id', memberId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: 'Member removed' }
+    }
+
+    case 'revoke_invite': {
+      const inviteId = preview._inviteId as string
+      if (!inviteId) {
+        return { success: false, error: 'Missing invite ID' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('organization_invites')
+        .delete()
+        .eq('id', inviteId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: 'Invite revoked' }
+    }
+
+    case 'update_integration': {
+      const provider = (preview._provider as string) || (args.provider as string)
+      if (!provider) {
+        return { success: false, error: 'Provider is required' }
+      }
+
+      const { data: existing } = await supabaseAdmin
+        .from('organization_integrations')
+        .select('enabled, config')
+        .eq('org_id', orgId)
+        .eq('provider', provider)
+        .maybeSingle()
+
+      const enabled = args.enabled !== undefined ? Boolean(args.enabled) : (existing?.enabled ?? false)
+      const config = args.config !== undefined ? args.config : (existing?.config ?? {})
+
+      const { error } = await supabaseAdmin
+        .from('organization_integrations')
+        .upsert({
+          org_id: orgId,
+          provider,
+          enabled,
+          config
+        }, { onConflict: 'org_id,provider' })
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Integration ${provider} updated` }
+    }
+
+    case 'update_org_settings': {
+      const updates = preview._updates as Record<string, unknown> | undefined
+      if (!updates || Object.keys(updates).length === 0) {
+        return { success: false, error: 'No updates provided' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('organizations')
+        .update(updates)
+        .eq('id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: 'Organization settings updated' }
+    }
+
+    case 'update_automation_setting': {
+      const automationType = (preview._automationType as string) || (args.automationType as string)
+      if (!automationType) {
+        return { success: false, error: 'Automation type is required' }
+      }
+
+      const { data: existing } = await supabaseAdmin
+        .from('organization_automation_settings')
+        .select('enabled, config')
+        .eq('org_id', orgId)
+        .eq('automation_type', automationType)
+        .maybeSingle()
+
+      const nextEnabled = args.enabled !== undefined ? Boolean(args.enabled) : (existing?.enabled ?? true)
+      const nextConfig = args.config && typeof args.config === 'object'
+        ? { ...(existing?.config ?? {}), ...(args.config as Record<string, unknown>) }
+        : (existing?.config ?? {})
+
+      const { error } = await supabaseAdmin
+        .from('organization_automation_settings')
+        .upsert({
+          org_id: orgId,
+          automation_type: automationType,
+          enabled: nextEnabled,
+          config: nextConfig
+        }, { onConflict: 'org_id,automation_type' })
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `Automation setting ${automationType} updated` }
+    }
+
+    case 'update_template': {
+      const table = preview._table as string
+      const templateId = preview._templateId as string
+      const updates = preview._updates as Record<string, unknown> | undefined
+
+      if (!table || !templateId || !updates) {
+        return { success: false, error: 'Missing template data' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from(table)
+        .update(updates)
+        .eq('id', templateId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: 'Template updated' }
+    }
+
+    case 'set_default_template': {
+      const table = preview._table as string
+      const templateId = preview._templateId as string
+
+      if (!table || !templateId) {
+        return { success: false, error: 'Missing template data' }
+      }
+
+      await supabaseAdmin
+        .from(table)
+        .update({ is_default: false })
+        .eq('org_id', orgId)
+
+      const { error } = await supabaseAdmin
+        .from(table)
+        .update({ is_default: true })
+        .eq('id', templateId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: 'Default template updated' }
+    }
+
+    case 'create_sms_template': {
+      const title = (args.title as string | undefined)?.trim() || 'Custom follow-up'
+      const body = (args.body as string | undefined)?.trim()
+
+      if (!body) {
+        return { success: false, error: 'Template body is required' }
+      }
+
+      const slugBase = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+      const slug = `${slugBase || 'custom-template'}-${Math.random().toString(36).slice(2, 6)}`
+      const nowIso = new Date().toISOString()
+
+      const { error } = await supabaseAdmin
+        .from('sms_templates')
+        .insert({
+          title,
+          body,
+          slug,
+          is_default: false,
+          updated_at: nowIso
+        })
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: `SMS template created: ${title}` }
+    }
+
+    case 'create_workflow': {
+      const name = (args.name as string | undefined)?.trim()
+      const triggerType = args.triggerType as string | undefined
+      const description = (args.description as string | undefined)?.trim() || null
+      const enabled = Boolean(args.enabled)
+      const triggerConfig = (args.triggerConfig as Record<string, unknown>) || {}
+      const steps = Array.isArray(args.steps) ? args.steps : []
+
+      if (!name || !triggerType) {
+        return { success: false, error: 'Workflow name and trigger type are required' }
+      }
+
+      const { data: newWorkflow, error: createError } = await supabaseAdmin
+        .from('workflows')
+        .insert({
+          org_id: orgId,
+          name,
+          description,
+          enabled,
+          trigger_type: triggerType,
+          trigger_config: triggerConfig
+        })
+        .select('id')
+        .single()
+
+      if (createError || !newWorkflow) {
+        return { success: false, error: createError?.message || 'Failed to create workflow' }
+      }
+
+      if (steps.length > 0) {
+        const stepsToInsert = steps.map((step: any, index: number) => ({
+          workflow_id: newWorkflow.id,
+          step_order: index + 1,
+          action_type: step.actionType,
+          action_config: step.actionConfig || {}
+        }))
+
+        const { error: stepsError } = await supabaseAdmin
+          .from('workflow_steps')
+          .insert(stepsToInsert)
+
+        if (stepsError) {
+          return { success: false, error: stepsError.message }
+        }
+      }
+
+      return { success: true, message: `Workflow created: ${name}` }
+    }
+
+    case 'update_workflow': {
+      const workflowId = args.workflowId as string
+      if (!workflowId) {
+        return { success: false, error: 'Workflow ID is required' }
+      }
+
+      const updates: Record<string, unknown> = {}
+      if (args.name !== undefined) updates.name = (args.name as string).trim()
+      if (args.description !== undefined) updates.description = (args.description as string).trim() || null
+      if (args.enabled !== undefined) updates.enabled = Boolean(args.enabled)
+      if (args.triggerType !== undefined) updates.trigger_type = args.triggerType
+      if (args.triggerConfig !== undefined) updates.trigger_config = args.triggerConfig
+
+      if (Object.keys(updates).length > 0) {
+        const { error: updateError } = await supabaseAdmin
+          .from('workflows')
+          .update(updates)
+          .eq('id', workflowId)
+          .eq('org_id', orgId)
+
+        if (updateError) {
+          return { success: false, error: updateError.message }
+        }
+      }
+
+      if (Array.isArray(args.steps)) {
+        await supabaseAdmin
+          .from('workflow_steps')
+          .delete()
+          .eq('workflow_id', workflowId)
+
+        const stepsToInsert = (args.steps as any[]).map((step: any, index: number) => ({
+          workflow_id: workflowId,
+          step_order: index + 1,
+          action_type: step.actionType,
+          action_config: step.actionConfig || {}
+        }))
+
+        if (stepsToInsert.length > 0) {
+          const { error: stepsError } = await supabaseAdmin
+            .from('workflow_steps')
+            .insert(stepsToInsert)
+
+          if (stepsError) {
+            return { success: false, error: stepsError.message }
+          }
+        }
+      }
+
+      return { success: true, message: 'Workflow updated' }
+    }
+
+    case 'delete_workflow': {
+      const workflowId = preview._workflowId as string
+      if (!workflowId) {
+        return { success: false, error: 'Workflow ID is required' }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('workflows')
+        .delete()
+        .eq('id', workflowId)
+        .eq('org_id', orgId)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, message: 'Workflow deleted' }
+    }
+
+    case 'summarize_call': {
+      const callId = preview._callId as string
+      if (!callId) {
+        return { success: false, error: 'Call ID is required' }
+      }
+
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/get-transcript-summary`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({ call_id: callId })
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || result?.error) {
+        return { success: false, error: result?.error || 'Failed to summarize call' }
+      }
+
+      return { success: true, message: `Call summarized for ${callId}` }
+    }
+
+    case 'sync_emails': {
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      const authorizationHeader = requestAuthHeader || `Bearer ${serviceKey}`
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/outlook-email-sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorizationHeader,
+          'X-Org-Id': orgId
+        },
+        body: JSON.stringify({})
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || result?.error) {
+        return { success: false, error: result?.error || 'Failed to sync emails' }
+      }
+
+      return { success: true, message: `Synced ${result.total || 0} emails` }
     }
 
     default:
@@ -3771,8 +8197,9 @@ Guidelines:
 5. For actions that modify data, always explain what you're about to do before calling the tool.
 6. If a request is ambiguous, ask clarifying questions.
 7. Never reveal internal database IDs to users - use names and readable identifiers.
+8. When saving phone numbers, normalise to E.164. For Australian mobiles, store as +614XXXXXXXX (no spaces).
 
-Lead statuses: Inquiry, Quoted, Quote Sent, Quote Accepted, Booking Confirmed, Marketing Loop, Lost, DNQ, No Further Contact
+Lead statuses: Unanswered, Marketing Loop, Follow Up, Quote Sent, Job Won, Jobs Completed, Not interested
 Booking statuses: scheduled, completed, cancelled, skipped
 Payment statuses: waiting_payment, invoice_sent, paid
 
@@ -3805,7 +8232,8 @@ You can query the CRM data and perform actions. Actions that modify data will re
         ctx,
         confirmAction.toolName,
         confirmAction.arguments,
-        confirmAction.preview
+        confirmAction.preview,
+        req.headers.get('Authorization')
       )
 
       if (!result.success) {
@@ -3894,6 +8322,15 @@ You can query the CRM data and perform actions. Actions that modify data will re
           break
         case 'get_marketing_status':
           result = await handleGetMarketingStatus(ctx, toolArgs)
+          break
+        case 'get_quote_share_link':
+          result = await handleGetQuoteShareLink(ctx, toolArgs)
+          break
+        case 'get_todos':
+          result = await handleGetTodos(ctx, toolArgs)
+          break
+        case 'get_cleaner_payouts':
+          result = await handleGetCleanerPayouts(ctx, toolArgs)
           break
         case 'get_cleaner_schedule':
           result = await handleGetCleanerSchedule(ctx, toolArgs)

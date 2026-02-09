@@ -146,6 +146,10 @@ Deno.serve(async (req) => {
     business_phone?: string
     business_email?: string
     business_abn?: string
+    business_operating_name?: string
+    bank_account_name?: string
+    bank_bsb?: string
+    bank_account_number?: string
   }
 
   try {
@@ -175,6 +179,10 @@ Deno.serve(async (req) => {
         business_phone: payload.business_phone?.trim() || null,
         business_email: payload.business_email?.trim() || user.email || null,
         business_abn: payload.business_abn?.trim() || null,
+        business_operating_name: payload.business_operating_name?.trim() || null,
+        bank_account_name: payload.bank_account_name?.trim() || null,
+        bank_bsb: payload.bank_bsb?.trim() || null,
+        bank_account_number: payload.bank_account_number?.trim() || null,
       })
       .select()
       .single()

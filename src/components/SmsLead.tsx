@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 import { playSaveSound } from '../lib/sounds'
 
 type SmsTemplate = {
@@ -65,6 +66,7 @@ export default function SmsLead({
   onSent,
   prefillBody,
 }: SmsLeadProps) {
+  const { currentOrg } = useAuth()
   const [isOpen, setIsOpen] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [sendingError, setSendingError] = useState<string | null>(null)
@@ -210,12 +212,18 @@ export default function SmsLead({
     setSendingError(null)
     setSendSuccess(null)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+      if (!currentOrg?.id) throw new Error('No organization selected')
+
       const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg.id,
         },
         body: JSON.stringify({
           phone_number: phoneNumber,
@@ -495,4 +503,3 @@ export default function SmsLead({
     </div>
   )
 }
-

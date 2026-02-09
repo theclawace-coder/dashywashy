@@ -22,6 +22,7 @@ interface Quote {
 
 type QuoteTemplate = {
   id: string
+  org_id?: string | null
   lead_id: string | null
   quote_number?: string | null
   address?: string | null
@@ -160,7 +161,7 @@ async function resolveBaseQuote(quoteId: string, leadId: string) {
     .from('quotes')
     .select(
       `
-        id, lead_id, quote_number, address, address_lat, address_lng, description, service, bedrooms, bathrooms,
+        id, org_id, lead_id, quote_number, address, address_lat, address_lng, description, service, bedrooms, bathrooms,
         addons, custom_addons, hourly_rate, cleaner_rate, cleaner_rate_type, main_service_hours, add_on_hours,
         total_hours, subtotal, discount_amount, discount_percentage, net_revenue, gst, total_inc_gst, cleaner_pay,
         profit, margin, deposit_percentage, deposit_amount, remaining_balance, notes, customer_name, customer_phone,
@@ -181,7 +182,7 @@ async function resolveBaseQuote(quoteId: string, leadId: string) {
       .from('quotes')
       .select(
         `
-          id, lead_id, quote_number, address, address_lat, address_lng, description, service, bedrooms, bathrooms,
+          id, org_id, lead_id, quote_number, address, address_lat, address_lng, description, service, bedrooms, bathrooms,
           addons, custom_addons, hourly_rate, cleaner_rate, cleaner_rate_type, main_service_hours, add_on_hours,
           total_hours, subtotal, discount_amount, discount_percentage, net_revenue, gst, total_inc_gst, cleaner_pay,
           profit, margin, deposit_percentage, deposit_amount, remaining_balance, notes, customer_name, customer_phone,
@@ -222,6 +223,7 @@ function buildVariantPayload(baseQuote: QuoteTemplate, version: number) {
   const quoteNumber = baseNumber ? `${baseNumber}v${version}` : null
 
   return {
+    org_id: baseQuote.org_id ?? null,
     lead_id: baseQuote.lead_id,
     email_id: baseQuote.email_id ?? null,
     quote_number: quoteNumber,
@@ -355,10 +357,15 @@ async function createBookingDirect(payload: CreateBookingPayload) {
   }
 
   const baseQuote = await resolveBaseQuote(payload.quoteId, payload.leadId)
+  const orgId = baseQuote.org_id
+  if (!orgId) {
+    throw new Error('Quote is missing org context; cannot create booking')
+  }
 
   const { data: series, error: seriesError } = await supabase
     .from('booking_series')
     .insert({
+      org_id: orgId,
       lead_id: payload.leadId,
       quote_id: baseQuote.id,
       title: 'Regular clean',
@@ -397,6 +404,7 @@ async function createBookingDirect(payload: CreateBookingPayload) {
   const occurrenceRecords = occurrenceDates.map((date, index) => {
     const endDate = new Date(date.getTime() + (payload.durationMinutes || 120) * 60 * 1000)
     return {
+      org_id: orgId,
       series_id: series.id,
       start_at: date.toISOString(),
       end_at: endDate.toISOString(),

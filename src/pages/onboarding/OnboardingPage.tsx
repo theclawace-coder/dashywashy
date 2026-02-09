@@ -54,6 +54,9 @@ export default function OnboardingPage() {
   const [phone, setPhone] = useState(currentOrg?.business_phone ?? '')
   const [bizEmail, setBizEmail] = useState(currentOrg?.business_email ?? '')
   const [operatingName, setOperatingName] = useState(currentOrg?.business_operating_name ?? '')
+  const [bankAccountName, setBankAccountName] = useState(currentOrg?.bank_account_name ?? '')
+  const [bankBsb, setBankBsb] = useState(currentOrg?.bank_bsb ?? '')
+  const [bankAccountNumber, setBankAccountNumber] = useState(currentOrg?.bank_account_number ?? '')
 
   // ---- Step 1: Branding & Locale ----
   const [logoUrl, setLogoUrl] = useState(currentOrg?.logo_url ?? '')
@@ -112,6 +115,10 @@ export default function OnboardingPage() {
           business_phone: phone.trim() || undefined,
           business_email: bizEmail.trim() || undefined,
           business_abn: abn.trim() || undefined,
+          business_operating_name: operatingName.trim() || undefined,
+          bank_account_name: bankAccountName.trim() || undefined,
+          bank_bsb: bankBsb.trim() || undefined,
+          bank_account_number: bankAccountNumber.trim() || undefined,
         },
       })
 
@@ -138,6 +145,9 @@ export default function OnboardingPage() {
           business_phone: phone.trim() || null,
           business_email: bizEmail.trim() || null,
           business_operating_name: operatingName.trim() || null,
+          bank_account_name: bankAccountName.trim() || null,
+          bank_bsb: bankBsb.trim() || null,
+          bank_account_number: bankAccountNumber.trim() || null,
           name: businessName.trim(),
         })
         .eq('id', orgId)
@@ -357,6 +367,14 @@ export default function OnboardingPage() {
                 <Input label="EMAIL" type="email" value={bizEmail} onChange={(e) => setBizEmail(e.target.value)} placeholder="hello@acme.com" />
               </div>
               <Input label="OPERATING / TRADING NAME" value={operatingName} onChange={(e) => setOperatingName(e.target.value)} placeholder="Optional alternative name" />
+              <div className="rounded-lg border border-white/10 bg-black/10 p-4 space-y-4">
+                <p className="text-micro text-[var(--color-text-muted)]">BANK DETAILS (FOR DIRECT TRANSFER)</p>
+                <Input label="ACCOUNT NAME" value={bankAccountName} onChange={(e) => setBankAccountName(e.target.value)} placeholder="Business account name" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Input label="BSB" value={bankBsb} onChange={(e) => setBankBsb(e.target.value)} placeholder="062-000" />
+                  <Input label="ACCOUNT NUMBER" value={bankAccountNumber} onChange={(e) => setBankAccountNumber(e.target.value)} placeholder="12345678" />
+                </div>
+              </div>
             </div>
           )}
 

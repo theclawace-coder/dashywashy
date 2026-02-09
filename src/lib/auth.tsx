@@ -1,5 +1,5 @@
-// ---------------------------------------------------------------------------
-// AuthProvider – core multi-tenant authentication & organisation context
+﻿// ---------------------------------------------------------------------------
+// AuthProvider â€“ core multi-tenant authentication & organisation context
 // ---------------------------------------------------------------------------
 
 import {
@@ -9,6 +9,7 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
   type ReactNode,
 } from 'react'
 import type { User, Session } from '@supabase/supabase-js'
@@ -36,7 +37,7 @@ const warn = (...args: unknown[]) => {
 }
 
 // ---------------------------------------------------------------------------
-// Role hierarchy – higher number = more privileges
+// Role hierarchy â€“ higher number = more privileges
 // ---------------------------------------------------------------------------
 
 const ROLE_HIERARCHY: Record<OrgRole, number> = {
@@ -83,6 +84,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentOrg, setCurrentOrg] = useState<Organization | null>(null)
   const [currentRole, setCurrentRole] = useState<OrgRole | null>(null)
   const [memberships, setMemberships] = useState<OrgMembership[]>([])
+  const lastOrgLoadKeyRef = useRef<string | null>(null)
+  const lastOrgLoadAtRef = useRef<number>(0)
 
   // -----------------------------------------------------------------------
   // Fetch organisation memberships + resolve current org
@@ -144,7 +147,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         warn('[auth] Failed to load user_preferences, using first membership:', prefsErr)
       }
 
-      // 3. Resolve the active membership – fall back to first if preference
+      // 3. Resolve the active membership â€“ fall back to first if preference
       //    is missing or points to an org the user no longer belongs to.
       const activeMembership =
         membershipList.find((m) => m.org_id === preferredOrgId) ??
@@ -196,16 +199,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(newSession?.user ?? null)
 
       if (newSession?.user) {
-        log('[auth] New session, loading org data...')
-        await loadOrgData(newSession.user.id)
+        if (_event === 'TOKEN_REFRESHED') {
+          log('[auth] TOKEN_REFRESHED - skipping org reload to avoid blocking UI')
+        } else {
+          const loadKey = newSession?.access_token || newSession.user.id
+          const now = Date.now()
+          const recentlyLoaded =
+            lastOrgLoadKeyRef.current === loadKey && now - lastOrgLoadAtRef.current < 5000
+
+          if (recentlyLoaded) {
+            log('[auth] Skipping org reload; already loaded for session')
+          } else {
+            log('[auth] New session, loading org data...')
+            await loadOrgData(newSession.user.id)
+            lastOrgLoadKeyRef.current = loadKey
+            lastOrgLoadAtRef.current = now
+          }
+        }
       } else {
-        // Signed out – clear org state
+        // Signed out â€“ clear org state
         log('[auth] Signed out, clearing org state')
         setMemberships([])
         setCurrentOrg(null)
         setCurrentRole(null)
         setOrgLoading(false)
         setOrgLoadError(null)
+        lastOrgLoadKeyRef.current = null
+        lastOrgLoadAtRef.current = 0
       }
 
       if (!cancelled) {
@@ -262,7 +282,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // -----------------------------------------------------------------------
-  // Reload org data (public — called after org creation in onboarding)
+  // Reload org data (public â€” called after org creation in onboarding)
   // -----------------------------------------------------------------------
 
   const reloadOrgData = useCallback(async () => {
@@ -320,4 +340,3 @@ export function useAuth(): AuthContextValue {
   }
   return ctx
 }
-

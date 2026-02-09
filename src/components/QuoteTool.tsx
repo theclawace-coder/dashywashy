@@ -174,13 +174,13 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
 
   const shareUrl = useMemo(() => {
     if (!latestQuote?.share_token) return null
-    const url = new URL(window.location.href)
+    const url = new URL('/quote', window.location.origin)
     url.searchParams.set('quote', latestQuote.share_token)
     return url.toString()
   }, [latestQuote])
 
   useEffect(() => {
-    fetchMapboxToken()
+    fetchMapboxToken(currentOrg?.id)
       .then((token) => {
         setMapboxToken(token)
         setMapboxError(null)
@@ -189,7 +189,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
         console.error('Mapbox token load failed', err)
         setMapboxError(err instanceof Error ? err.message : 'Unable to load Mapbox token')
       })
-  }, [])
+  }, [currentOrg?.id])
 
   const refreshQuotes = useCallback(async () => {
     if (!leadId) return
@@ -392,10 +392,36 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     typeof val === 'number' && Number.isFinite(val)
       ? new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD' }).format(val)
       : '—'
+  const ADDON_DISPLAY_NAMES: Record<string, string> = {
+    inside_oven_clean: 'Inside Oven Clean',
+    inside_fridge_clean: 'Inside Fridge Clean',
+    inside_freezer_clean: 'Inside Freezer Clean',
+    inside_windows_and_tracks: 'Inside Windows & Tracks',
+    blinds_up_to_5_sets: 'Blinds (up to 5 sets)',
+    balcony_clean: 'Balcony Clean',
+    garage_sweep_and_cobwebs: 'Garage Sweep & Cobwebs',
+    carpet_steam_clean_1_room: 'Carpet Steam Clean (1 room)',
+    wall_spot_cleaning: 'Wall Spot Cleaning',
+    extra_bathroom: 'Extra Bathroom',
+    extra_bedroom: 'Extra Bedroom',
+  }
+  const humanizeAddonKey = (value: string) => {
+    const mapped = ADDON_DISPLAY_NAMES[value]
+    if (mapped) return mapped
+    return value
+      .replace(/_/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\b\w/g, (char) => char.toUpperCase())
+  }
   const formatAddons = (addons?: string[] | null, customAddons?: CustomAddOn[] | null) => {
     const parts: string[] = []
     if (Array.isArray(addons)) {
-      parts.push(...addons.filter((item) => typeof item === 'string' && item.trim() !== ''))
+      addons.forEach((item) => {
+        if (typeof item === 'string' && item.trim() !== '') {
+          parts.push(humanizeAddonKey(item.trim()))
+        }
+      })
     }
     if (Array.isArray(customAddons)) {
       customAddons.forEach((addon) => {
@@ -595,20 +621,25 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     setStripeLinkLoading(true)
     setStripeLinkError(null)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
       const shareToken = latestQuote?.share_token || editingShareToken
       const successUrl = shareToken
-        ? `${window.location.origin}?quote=${shareToken}&payment_status=success`
-        : `${window.location.origin}?payment_status=success`
+        ? `${window.location.origin}/quote?quote=${shareToken}&payment_status=success`
+        : `${window.location.origin}/quote?payment_status=success`
       const cancelUrl = shareToken
-        ? `${window.location.origin}?quote=${shareToken}&payment_status=cancelled`
-        : `${window.location.origin}?payment_status=cancelled`
+        ? `${window.location.origin}/quote?quote=${shareToken}&payment_status=cancelled`
+        : `${window.location.origin}/quote?payment_status=cancelled`
 
       const response = await fetch(`${supabaseUrl}/functions/v1/create-payment-link`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg!.id,
         },
         body: JSON.stringify({
           amount_cents: amountCents,
@@ -662,12 +693,17 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     setIsEmailSending(true)
     setEmailError(null)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
       const response = await fetch(`${supabaseUrl}/functions/v1/quote-email`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg!.id,
         },
         body: JSON.stringify({
           quoteId: latestQuote.id,
@@ -734,12 +770,17 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     setIsSmsSending(true)
     setSmsError(null)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
       const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg!.id,
         },
         body: JSON.stringify({
           phone_number: targetPhone,
@@ -830,12 +871,17 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
     setIsDescLoading(true)
     setCalcError(null)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
       const res = await fetch(`${supabaseUrl}/functions/v1/generate-quote-description`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg!.id,
         },
         body: JSON.stringify({
           customerName: lead?.name || 'customer',
@@ -1602,7 +1648,7 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
                   {quote.notes && <span className="truncate max-w-[220px]">Notes: {quote.notes}</span>}
                   {quote.share_token && (
                     <a
-                      href={`${window.location.origin}?quote=${quote.share_token}`}
+                      href={`${window.location.origin}/quote?quote=${quote.share_token}`}
                       target="_blank"
                       rel="noreferrer"
                       className="text-emerald-300"

@@ -13,6 +13,9 @@ export interface Organization {
   business_phone: string | null
   business_email: string | null
   business_operating_name: string | null
+  bank_account_name: string | null
+  bank_bsb: string | null
+  bank_account_number: string | null
   timezone: string
   currency: string
   default_client_hourly_rate: number

@@ -649,7 +649,7 @@ export default function Calendar() {
   }, [fetchCleaners])
 
   useEffect(() => {
-    fetchMapboxToken()
+    fetchMapboxToken(currentOrg?.id)
       .then((token) => {
         setMapboxToken(token)
         setMapboxError(null)
@@ -658,7 +658,7 @@ export default function Calendar() {
         console.error('Mapbox token load failed', err)
         setMapboxError(err instanceof Error ? err.message : 'Unable to load Mapbox token')
       })
-  }, [])
+  }, [currentOrg?.id])
 
   // Fetch bookings for current view
   const fetchBookings = useCallback(async (start: Date, end: Date) => {
@@ -1300,4 +1300,3 @@ export default function Calendar() {
     </div>
   )
 }
-

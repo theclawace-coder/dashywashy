@@ -50,12 +50,37 @@ Deno.serve(async (req) => {
   try {
     const { data, error } = await supabase
       .from("quotes")
-      .select("*")
+      .select(
+        "*, organization:organizations (business_name, business_operating_name, business_abn, bank_account_name, bank_bsb, bank_account_number)"
+      )
       .eq("share_token", shareToken)
       .single();
 
     if (error) {
       return jsonResponse({ success: false, error: error.message }, 404);
+    }
+
+    // Fallback: if relationship data is missing, fetch org directly by org_id.
+    const hasOrgDetails =
+      data?.organization &&
+      (data.organization.bank_account_name ||
+        data.organization.bank_bsb ||
+        data.organization.bank_account_number ||
+        data.organization.business_name ||
+        data.organization.business_operating_name);
+
+    if (!hasOrgDetails && data?.org_id) {
+      const { data: org } = await supabase
+        .from("organizations")
+        .select(
+          "business_name, business_operating_name, business_abn, bank_account_name, bank_bsb, bank_account_number"
+        )
+        .eq("id", data.org_id)
+        .maybeSingle();
+
+      if (org) {
+        (data as any).organization = org;
+      }
     }
 
     return jsonResponse({ success: true, quote: data });

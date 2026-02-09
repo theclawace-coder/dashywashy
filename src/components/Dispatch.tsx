@@ -245,7 +245,7 @@ export default function Dispatch() {
   const BULK_PAGE_SIZE = 8
 
   useEffect(() => {
-    fetchMapboxToken()
+    fetchMapboxToken(currentOrg?.id)
       .then((token) => {
         setMapboxToken(token)
         setMapboxError(null)
@@ -254,7 +254,7 @@ export default function Dispatch() {
         console.error('Mapbox token load failed', err)
         setMapboxError(err instanceof Error ? err.message : 'Unable to load Mapbox token')
       })
-  }, [])
+  }, [currentOrg?.id])
 
   useEffect(() => {
     if (!mapboxToken) return
@@ -595,9 +595,8 @@ export default function Dispatch() {
           .order('start_at', { ascending: true }),
         supabase
           .from('cleaner_job_reviews')
-          .select('cleaner_id, avg_rating:avg(rating), review_count:count(id)')
+          .select('cleaner_id, rating')
           .eq('org_id', currentOrg.id)
-          // Aggregates automatically group by non-aggregate columns in PostgREST
           .order('cleaner_id'),
       ])
 
@@ -611,13 +610,26 @@ export default function Dispatch() {
       setJobs(jobList as any)
 
       if (reviewStats && Array.isArray(reviewStats)) {
-        const stats: Record<string, CleanerReviewStat> = {}
+        const agg: Record<string, { sum: number; rated: number; total: number }> = {}
         for (const row of reviewStats as any[]) {
           const cid = row?.cleaner_id as string | undefined
           if (!cid) continue
+          const rating = typeof row?.rating === 'number' ? row.rating : Number.NaN
+          if (!agg[cid]) {
+            agg[cid] = { sum: 0, rated: 0, total: 0 }
+          }
+          agg[cid].total += 1
+          if (Number.isFinite(rating)) {
+            agg[cid].sum += rating
+            agg[cid].rated += 1
+          }
+        }
+
+        const stats: Record<string, CleanerReviewStat> = {}
+        for (const [cid, data] of Object.entries(agg)) {
           stats[cid] = {
-            avg: typeof row?.avg_rating === 'number' ? row.avg_rating : null,
-            count: typeof row?.review_count === 'number' ? row.review_count : 0,
+            avg: data.rated ? data.sum / data.rated : null,
+            count: data.total,
           }
         }
         setCleanerReviewStats(stats)
@@ -922,8 +934,10 @@ export default function Dispatch() {
       typeof quote?.bedrooms === 'number' && typeof quote?.bathrooms === 'number'
         ? `${quote.bedrooms} bed / ${quote.bathrooms} bath`
         : 'Bedrooms/bathrooms unavailable'
-    const addons = normalizeAddonList(quote?.addons, quote?.customAddons)
-    const addonsText = addons.length ? addons.join(', ') : 'None'
+  const addons = normalizeAddonList(quote?.addons, quote?.customAddons)
+    const addonsText = addons.length
+      ? addons.map((addon) => addon.replace(/_/g, ' ').replace(/\s+/g, ' ').trim()).join(', ')
+      : 'None'
     const notes = job.notes || job.series?.notes || quote?.notes || 'None'
     const dateText = formatDateTime(job.start_at) || job.start_at
     const cleanerPay = formatCurrency(quote?.cleanerPay) || 'TBC'
@@ -945,12 +959,17 @@ export default function Dispatch() {
       throw new Error('Cleaner has no phone number.')
     }
     const message = await buildAssignmentSms(job, cleaner)
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (!token) throw new Error('Not authenticated')
+    if (!currentOrg?.id) throw new Error('No organization selected')
     const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         apikey: supabaseAnonKey,
-        Authorization: `Bearer ${supabaseAnonKey}`,
+        Authorization: `Bearer ${token}`,
+        'X-Org-Id': currentOrg.id,
       },
       body: JSON.stringify({
         phone_number: cleaner.phone,
@@ -1023,13 +1042,18 @@ export default function Dispatch() {
     }
     setSmsSending(true)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+      if (!currentOrg?.id) throw new Error('No organization selected')
       for (const c of recipients) {
         const response = await fetch(`${supabaseUrl}/functions/v1/internal-send-sms`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             apikey: supabaseAnonKey,
-            Authorization: `Bearer ${supabaseAnonKey}`,
+            Authorization: `Bearer ${token}`,
+            'X-Org-Id': currentOrg.id,
           },
           body: JSON.stringify({
             phone_number: c.phone,
@@ -2162,5 +2186,3 @@ export default function Dispatch() {
     </div>
   )
 }
-
-

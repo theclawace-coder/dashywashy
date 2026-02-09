@@ -21,6 +21,9 @@ export default function OrgSettingsPage() {
   const [bizEmail, setBizEmail] = useState('')
   const [operatingName, setOperatingName] = useState('')
   const [timezone, setTimezone] = useState('Australia/Sydney')
+  const [bankAccountName, setBankAccountName] = useState('')
+  const [bankBsb, setBankBsb] = useState('')
+  const [bankAccountNumber, setBankAccountNumber] = useState('')
 
   // Pricing
   const [clientRate, setClientRate] = useState('')
@@ -41,6 +44,9 @@ export default function OrgSettingsPage() {
     setBizEmail(currentOrg.business_email ?? '')
     setOperatingName(currentOrg.business_operating_name ?? '')
     setTimezone(currentOrg.timezone ?? 'Australia/Sydney')
+    setBankAccountName(currentOrg.bank_account_name ?? '')
+    setBankBsb(currentOrg.bank_bsb ?? '')
+    setBankAccountNumber(currentOrg.bank_account_number ?? '')
     setClientRate(currentOrg.default_client_hourly_rate?.toString() ?? '60')
     setCleanerRate(currentOrg.default_cleaner_hourly_rate?.toString() ?? '35')
     setGstRate(currentOrg.gst_rate?.toString() ?? '0.1')
@@ -65,6 +71,9 @@ export default function OrgSettingsPage() {
         business_phone: phone.trim() || null,
         business_email: bizEmail.trim() || null,
         business_operating_name: operatingName.trim() || null,
+        bank_account_name: bankAccountName.trim() || null,
+        bank_bsb: bankBsb.trim() || null,
+        bank_account_number: bankAccountNumber.trim() || null,
         timezone,
         default_client_hourly_rate: parseFloat(clientRate) || 60,
         default_cleaner_hourly_rate: parseFloat(cleanerRate) || 35,
@@ -125,6 +134,14 @@ export default function OrgSettingsPage() {
             <Input label="EMAIL" type="email" value={bizEmail} onChange={(e) => setBizEmail(e.target.value)} placeholder="hello@business.com" />
           </div>
           <Input label="OPERATING / TRADING NAME" value={operatingName} onChange={(e) => setOperatingName(e.target.value)} placeholder="Optional" />
+          <div className="rounded-lg border border-white/10 bg-black/10 p-4 space-y-4">
+            <p className="text-micro text-[var(--color-text-muted)]">BANK DETAILS (FOR DIRECT TRANSFER)</p>
+            <Input label="ACCOUNT NAME" value={bankAccountName} onChange={(e) => setBankAccountName(e.target.value)} placeholder="Business account name" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Input label="BSB" value={bankBsb} onChange={(e) => setBankBsb(e.target.value)} placeholder="062-000" />
+              <Input label="ACCOUNT NUMBER" value={bankAccountNumber} onChange={(e) => setBankAccountNumber(e.target.value)} placeholder="12345678" />
+            </div>
+          </div>
           <div>
             <label className="text-micro block mb-1.5">TIMEZONE</label>
             <select value={timezone} onChange={(e) => setTimezone(e.target.value)} className="input w-full">

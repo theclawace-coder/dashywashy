@@ -138,12 +138,18 @@ export default function SalesFunnel() {
       setSavingId(leadId)
       setLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, status: status || null } : l)))
 
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+      if (!currentOrg?.id) throw new Error('No organization selected')
+
       const response = await fetch(`${supabaseUrl}/functions/v1/update-lead-status`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg.id,
         },
         body: JSON.stringify({ leadId, status: status || null }),
       })
@@ -209,12 +215,18 @@ export default function SalesFunnel() {
 
     setCallingLeadId(lead.id)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+      if (!currentOrg?.id) throw new Error('No organization selected')
+
       const response = await fetch(`${supabaseUrl}/functions/v1/call-lead`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
+          Authorization: `Bearer ${token}`,
+          'X-Org-Id': currentOrg.id,
         },
         body: JSON.stringify({ phone_number: lead.phone_number }),
       })
