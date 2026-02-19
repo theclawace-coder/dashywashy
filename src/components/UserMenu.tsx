@@ -48,7 +48,7 @@ export default function UserMenu() {
     setSwitching(false)
     setOpen(false)
     // Reload to re-fetch all data for the new org
-    window.location.href = '/'
+    window.location.href = '/app'
   }
 
   const handleSignOut = async () => {
@@ -136,7 +136,7 @@ export default function UserMenu() {
 
           {/* Settings link */}
           <button
-            onClick={() => { navigate('/settings'); setOpen(false) }}
+            onClick={() => { navigate('/app/settings'); setOpen(false) }}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left hover:bg-[var(--color-surface)] transition-colors text-[var(--color-text-secondary)]"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

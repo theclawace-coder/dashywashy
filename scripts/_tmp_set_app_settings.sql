@@ -1,0 +1,2 @@
+ALTER DATABASE postgres SET app.settings.service_role_key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpkaXRheXZ3bmx4a3RvdGZ5YnZrIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDA3ODQ1MCwiZXhwIjoyMDg1NjU0NDUwfQ.qjLgtX6EwvRJABB0vIIfEaQi82tBFzL6c49VLSulFC4';
+ALTER DATABASE postgres SET app.settings.supabase_url = 'https://jditayvwnlxktotfybvk.supabase.co';

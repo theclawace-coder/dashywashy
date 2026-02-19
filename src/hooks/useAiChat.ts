@@ -121,8 +121,12 @@ export function useAiChat(): UseAiChatResult {
       )
 
       if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(errorText || 'Failed to get response')
+        const errorPayload = await response.json().catch(() => null)
+        const message =
+          errorPayload?.message ||
+          errorPayload?.error ||
+          `Failed to get response (${response.status})`
+        throw new Error(message)
       }
 
       const data = await response.json()
@@ -234,8 +238,12 @@ export function useAiChat(): UseAiChatResult {
       )
 
       if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(errorText || 'Failed to execute action')
+        const errorPayload = await response.json().catch(() => null)
+        const message =
+          errorPayload?.message ||
+          errorPayload?.error ||
+          `Failed to execute action (${response.status})`
+        throw new Error(message)
       }
 
       const data = await response.json()

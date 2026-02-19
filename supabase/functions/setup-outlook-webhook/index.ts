@@ -1,5 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { resolveOrgFromRequest, getOrgIntegration, corsHeaders, jsonResponse, jsonError } from '../_shared/org-resolver.ts'
+import { resolveOrgFromRequest, corsHeaders, jsonResponse, jsonError } from '../_shared/org-resolver.ts'
 
 type GraphSubscription = {
   id?: string;
@@ -60,6 +60,21 @@ async function renewSubscription(token: string, subscriptionId: string, expirati
   return { ok: response.ok, data: responseData };
 }
 
+async function updateIntegrationConfig(
+  supabaseAdmin: any,
+  orgId: string,
+  currentConfig: Record<string, string>,
+  updates: Record<string, unknown>,
+) {
+  const nextConfig = { ...currentConfig, ...updates };
+  await supabaseAdmin
+    .from('organization_integrations')
+    .update({ config: nextConfig })
+    .eq('org_id', orgId)
+    .eq('provider', 'outlook');
+  return nextConfig;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -67,7 +82,18 @@ Deno.serve(async (req: Request) => {
 
   try {
     const { orgId, supabaseAdmin } = await resolveOrgFromRequest(req)
-    const outlookConfig = await getOrgIntegration(supabaseAdmin, orgId, 'outlook')
+    const { data: integration } = await supabaseAdmin
+      .from('organization_integrations')
+      .select('config, enabled')
+      .eq('org_id', orgId)
+      .eq('provider', 'outlook')
+      .maybeSingle()
+
+    if (!integration?.enabled) {
+      return jsonError("Outlook integration is disabled", 400);
+    }
+
+    const outlookConfig = (integration.config || {}) as Record<string, string>
 
     const tenantId = outlookConfig.tenant_id || ''
     const clientId = outlookConfig.client_id || ''
@@ -97,8 +123,14 @@ Deno.serve(async (req: Request) => {
 
     if (!tokenResponse.ok) {
       const errorText = await tokenResponse.text();
-      console.error(`[Setup Webhook] Token error: ${errorText}`);
-      return jsonError("Failed to get access token", 500);
+      let errorData: any = {};
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { raw: errorText };
+      }
+      console.error(`[Setup Webhook] Token error:`, errorData);
+      return jsonError(`Failed to get access token: ${errorData.error_description || errorData.error || errorText}`, 500);
     }
 
     const tokenData = await tokenResponse.json();
@@ -142,7 +174,33 @@ Deno.serve(async (req: Request) => {
 
       const subscriptions = listResult.data;
       console.log(`[Setup Webhook] Found ${subscriptions.value?.length || 0} subscriptions`);
-      return jsonResponse(subscriptions);
+
+      const webhookUrl = `${supabaseUrl}/functions/v1/outlook-webhook`;
+      const resource = `users/${userEmail}/messages`;
+      const matches = (subscriptions.value || []).filter((sub: GraphSubscription) =>
+        sub.notificationUrl === webhookUrl &&
+        sub.resource === resource &&
+        sub.clientState === "outlook-email-subscription"
+      );
+      const primary = matches.reduce<GraphSubscription | null>((acc, current) => {
+        if (!acc) return current;
+        if (!acc.expirationDateTime) return current;
+        if (!current.expirationDateTime) return acc;
+        return new Date(current.expirationDateTime) > new Date(acc.expirationDateTime) ? current : acc;
+      }, null);
+
+      await updateIntegrationConfig(supabaseAdmin, orgId, outlookConfig, {
+        outlook_subscription_id: primary?.id ? String(primary.id) : null,
+        outlook_subscription_expires_at: primary?.expirationDateTime || null,
+        outlook_subscription_last_checked_at: new Date().toISOString(),
+        outlook_webhook_url: webhookUrl,
+      });
+
+      return jsonResponse({
+        ...subscriptions,
+        matching: matches,
+        webhookUrl,
+      });
     }
 
     if (action === "create") {
@@ -186,6 +244,14 @@ Deno.serve(async (req: Request) => {
           if (!renewResult.ok) {
             console.error(`[Setup Webhook] Failed to renew subscription:`, renewResult.data);
           }
+
+          await updateIntegrationConfig(supabaseAdmin, orgId, outlookConfig, {
+            outlook_subscription_id: primary.id ? String(primary.id) : null,
+            outlook_subscription_expires_at: expirationIso,
+            outlook_subscription_last_checked_at: new Date().toISOString(),
+            outlook_subscription_last_action: "renewed",
+            outlook_webhook_url: webhookUrl,
+          });
 
           return jsonResponse({
             success: renewResult.ok,
@@ -246,6 +312,13 @@ Deno.serve(async (req: Request) => {
       }
 
       console.log(`[Setup Webhook] Subscription created successfully:`, responseText);
+      await updateIntegrationConfig(supabaseAdmin, orgId, outlookConfig, {
+        outlook_subscription_id: responseData?.id ? String(responseData.id) : null,
+        outlook_subscription_expires_at: expirationIso,
+        outlook_subscription_last_checked_at: new Date().toISOString(),
+        outlook_subscription_last_action: "created",
+        outlook_webhook_url: webhookUrl,
+      });
       return jsonResponse({
         success: true,
         action: "created",
@@ -270,6 +343,14 @@ Deno.serve(async (req: Request) => {
       if (!renewResponse.ok) {
         console.error(`[Setup Webhook] Failed to renew subscription:`, renewResponse.data);
       }
+
+      await updateIntegrationConfig(supabaseAdmin, orgId, outlookConfig, {
+        outlook_subscription_id: subscriptionId ? String(subscriptionId) : null,
+        outlook_subscription_expires_at: expirationDateTime.toISOString(),
+        outlook_subscription_last_checked_at: new Date().toISOString(),
+        outlook_subscription_last_action: "renewed",
+        outlook_webhook_url: `${supabaseUrl}/functions/v1/outlook-webhook`,
+      });
 
       return jsonResponse({
         success: renewResponse.ok,

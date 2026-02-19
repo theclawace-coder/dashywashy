@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WorkflowListPage - List and manage automated workflows.
  * A no-code automation builder for creating trigger->action sequences.
  */
@@ -6,10 +6,93 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../lib/auth'
+import { getErrorMessage } from '../../lib/errors'
 import { supabase } from '../../lib/supabase'
 import { GlassCard, Button, Badge, Modal, Switch } from '../../components/ui'
 
-type TriggerType = 'lead_status_change' | 'time_based' | 'event_based'
+type AutomationType =
+  | 'marketing_sms'
+  | 'marketing_email'
+  | 'booking_completion'
+  | 'booking_reminder'
+  | 'quote_email'
+  | 'payment_sms'
+  | 'review_sms'
+  | 'daily_summary'
+
+type AutomationSetting = {
+  enabled: boolean
+  config: Record<string, any>
+}
+
+const DEFAULT_AUTOMATION_SETTINGS: Record<AutomationType, AutomationSetting> = {
+  marketing_sms: { enabled: true, config: {} },
+  marketing_email: { enabled: true, config: {} },
+  booking_completion: { enabled: true, config: { subject: '', body: '' } },
+  booking_reminder: { enabled: true, config: { lead_hours: 24, subject: '', body: '' } },
+  quote_email: { enabled: true, config: {} },
+  payment_sms: { enabled: true, config: { template_id: '' } },
+  review_sms: { enabled: true, config: { template_id: '' } },
+  daily_summary: { enabled: true, config: { recipient_email: '', timezone: 'Australia/Sydney' } },
+}
+
+const CORE_AUTOMATIONS: Array<{
+  key: AutomationType
+  name: string
+  description: string
+  settingsAnchor: string
+}> = [
+  {
+    key: 'marketing_sms',
+    name: 'Marketing Loop (SMS)',
+    description: '7-step SMS nurture journey for Marketing Loop leads.',
+    settingsAnchor: 'automation-marketing-loop',
+  },
+  {
+    key: 'marketing_email',
+    name: 'Marketing Loop (Email)',
+    description: '7-step email journey for Marketing Loop leads.',
+    settingsAnchor: 'automation-marketing-loop',
+  },
+  {
+    key: 'quote_email',
+    name: 'Quote Email',
+    description: 'Automatic email when a lead moves to Quote Sent.',
+    settingsAnchor: 'automation-quote-email',
+  },
+  {
+    key: 'booking_completion',
+    name: 'Booking Completion Email',
+    description: 'Send a completion email after a job is finished.',
+    settingsAnchor: 'automation-booking-emails',
+  },
+  {
+    key: 'booking_reminder',
+    name: 'Booking Reminder Email',
+    description: 'Send reminders before scheduled bookings.',
+    settingsAnchor: 'automation-booking-emails',
+  },
+  {
+    key: 'payment_sms',
+    name: 'Payment Reminder SMS',
+    description: 'Text customers to complete payment after a job.',
+    settingsAnchor: 'automation-payment-sms',
+  },
+  {
+    key: 'review_sms',
+    name: 'Review Request SMS',
+    description: 'Request a review after a completed job.',
+    settingsAnchor: 'automation-review-sms',
+  },
+  {
+    key: 'daily_summary',
+    name: 'Daily Summary Email',
+    description: 'End-of-day performance summary.',
+    settingsAnchor: 'automation-daily-summary',
+  },
+]
+
+type TriggerType = 'lead_status_change' | 'time_based' | 'event_based' | 'manual' | 'scheduled'
 
 interface Workflow {
   id: string
@@ -42,8 +125,9 @@ const TRIGGER_LABELS: Record<TriggerType, { label: string; icon: string; color: 
   lead_status_change: { label: 'Status Change', icon: '🔄', color: 'info' },
   time_based: { label: 'Time-Based', icon: '⏰', color: 'warning' },
   event_based: { label: 'Event', icon: '⚡', color: 'success' },
+  manual: { label: 'Manual', icon: '🖱️', color: 'info' },
+  scheduled: { label: 'Scheduled', icon: '📆', color: 'warning' },
 }
-
 function formatDate(dateStr: string) {
   const date = new Date(dateStr)
   return date.toLocaleDateString('en-AU', {
@@ -65,12 +149,16 @@ function getTriggerDescription(workflow: Workflow): string {
   }
 
   if (trigger_type === 'time_based') {
-    const offsetDays = trigger_config.offset_days as number | undefined
+    const offsetRaw =
+      (trigger_config.offset_value as number | undefined) ??
+      (trigger_config.offset_days as number | undefined) ??
+      0
+    const offsetUnit = (trigger_config.offset_unit as string | undefined) || 'days'
     const relativeTo = trigger_config.relative_to as string | undefined
-    if (offsetDays !== undefined) {
-      const direction = offsetDays < 0 ? 'before' : 'after'
-      const days = Math.abs(offsetDays)
-      return `${days} day${days !== 1 ? 's' : ''} ${direction} ${relativeTo || 'booking'}`
+    if (offsetRaw !== undefined) {
+      const direction = offsetRaw < 0 ? 'before' : 'after'
+      const value = Math.abs(offsetRaw)
+      return `${value} ${offsetUnit} ${direction} ${relativeTo || 'booking'}`
     }
     return 'Time-based trigger'
   }
@@ -80,15 +168,25 @@ function getTriggerDescription(workflow: Workflow): string {
     if (event) {
       const eventLabels: Record<string, string> = {
         lead_created: 'When new lead is created',
-        quote_sent: 'When quote is sent',
-        quote_accepted: 'When quote is accepted',
         booking_created: 'When booking is created',
         booking_completed: 'When booking is completed',
-        payment_received: 'When payment is received',
+        cleaner_assigned: 'When cleaner is assigned',
+        booking_paid: 'When booking is paid',
       }
       return eventLabels[event] || `When ${event.replace(/_/g, ' ')}`
     }
     return 'Event-based trigger'
+  }
+
+  if (trigger_type === 'manual') {
+    const entity = (trigger_config.entity_type as string | undefined) || 'lead'
+    return `Manual run from ${entity}`
+  }
+
+  if (trigger_type === 'scheduled') {
+    const time = (trigger_config.time as string | undefined) || '18:00'
+    const tz = (trigger_config.timezone as string | undefined) || 'local time'
+    return `Daily at ${time} (${tz})`
   }
 
   return 'Unknown trigger'
@@ -101,6 +199,9 @@ export default function WorkflowListPage() {
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
   const [recentRuns, setRecentRuns] = useState<Record<string, WorkflowRun>>({})
+  const [automationSettings, setAutomationSettings] = useState<Record<AutomationType, AutomationSetting>>(DEFAULT_AUTOMATION_SETTINGS)
+  const [automationError, setAutomationError] = useState<string | null>(null)
+  const [automationSaving, setAutomationSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showTemplateModal, setShowTemplateModal] = useState(false)
@@ -115,9 +216,10 @@ export default function WorkflowListPage() {
 
     setLoading(true)
     setError(null)
+    setAutomationError(null)
 
     try {
-      const [workflowsRes, templatesRes, runsRes] = await Promise.all([
+      const [workflowsRes, templatesRes, runsRes, automationRes] = await Promise.all([
         supabase
           .from('workflows')
           .select('*')
@@ -134,6 +236,10 @@ export default function WorkflowListPage() {
           .eq('org_id', orgId)
           .order('started_at', { ascending: false })
           .limit(100),
+        supabase
+          .from('organization_automation_settings')
+          .select('automation_type, enabled, config')
+          .eq('org_id', orgId),
       ])
 
       if (workflowsRes.error) throw workflowsRes.error
@@ -141,6 +247,19 @@ export default function WorkflowListPage() {
 
       setWorkflows(workflowsRes.data || [])
       setTemplates(templatesRes.data || [])
+
+      if (automationRes.error) {
+        setAutomationError(automationRes.error.message)
+      } else {
+        const merged = { ...DEFAULT_AUTOMATION_SETTINGS }
+        ;(automationRes.data || []).forEach((row: any) => {
+          merged[row.automation_type as AutomationType] = {
+            enabled: row.enabled ?? true,
+            config: row.config ?? {},
+          }
+        })
+        setAutomationSettings(merged)
+      }
 
       // Group runs by workflow_id, keeping the most recent
       const runsByWorkflow: Record<string, WorkflowRun> = {}
@@ -151,7 +270,7 @@ export default function WorkflowListPage() {
       }
       setRecentRuns(runsByWorkflow)
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to load workflows'
+      const message = getErrorMessage(err, 'Failed to load workflows')
       setError(message)
     } finally {
       setLoading(false)
@@ -185,6 +304,39 @@ export default function WorkflowListPage() {
       }
     },
     [orgId]
+  )
+
+  const updateAutomationSetting = useCallback(
+    async (type: AutomationType, enabled: boolean) => {
+      if (!orgId) return
+      setAutomationSaving(true)
+      setAutomationError(null)
+
+      const current = automationSettings[type] || DEFAULT_AUTOMATION_SETTINGS[type]
+      const next = { ...current, enabled }
+
+      setAutomationSettings((prev) => ({ ...prev, [type]: next }))
+
+      const { error: upsertError } = await supabase
+        .from('organization_automation_settings')
+        .upsert(
+          {
+            org_id: orgId,
+            automation_type: type,
+            enabled: next.enabled,
+            config: next.config,
+          },
+          { onConflict: 'org_id,automation_type' }
+        )
+
+      if (upsertError) {
+        setAutomationError(upsertError.message)
+        setAutomationSettings((prev) => ({ ...prev, [type]: current }))
+      }
+
+      setAutomationSaving(false)
+    },
+    [automationSettings, orgId]
   )
 
   const createFromTemplate = useCallback(
@@ -238,7 +390,7 @@ export default function WorkflowListPage() {
         }
 
         setShowTemplateModal(false)
-        navigate(`/settings/workflows/${newWorkflow.id}`)
+        navigate(`/app/settings/workflows/${newWorkflow.id}`)
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Failed to create workflow'
         setError(message)
@@ -291,14 +443,14 @@ export default function WorkflowListPage() {
         <div>
           <h1 className="text-title text-white">Workflows</h1>
           <p className="text-caption mt-1">
-            Create automated sequences triggered by events, status changes, or schedules.
+            Custom, multi-step automations. Core automations live in Automation Settings.
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => setShowTemplateModal(true)}>
             Start from Template
           </Button>
-          <Button variant="primary" onClick={() => navigate('/settings/workflows/new')}>
+          <Button variant="primary" onClick={() => navigate('/app/settings/workflows/new')}>
             Create Workflow
           </Button>
         </div>
@@ -310,6 +462,53 @@ export default function WorkflowListPage() {
           <p className="text-sm text-red-400">{error}</p>
         </div>
       )}
+
+      <GlassCard className="p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-heading text-white">Core Automations</h2>
+            <p className="text-caption">Managed from Automation Settings. Toggles sync both places.</p>
+          </div>
+          <Badge variant={automationSaving ? 'warning' : 'info'}>
+            {automationSaving ? 'Saving...' : 'Settings-backed'}
+          </Badge>
+        </div>
+
+        {automationError && (
+          <div className="p-3 rounded-lg bg-[var(--color-error-muted)] border border-red-500/20">
+            <p className="text-sm text-red-400">{automationError}</p>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {CORE_AUTOMATIONS.map((automation) => (
+            <div key={automation.key} className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm text-white font-medium">{automation.name}</p>
+                <p className="text-xs text-[var(--color-text-muted)]">{automation.description}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => navigate(`/app/automations#${automation.settingsAnchor}`)}
+                >
+                  Configure
+                </Button>
+                <Switch
+                  checked={automationSettings[automation.key]?.enabled ?? true}
+                  onChange={(checked) => updateAutomationSetting(automation.key, checked)}
+                  disabled={automationSaving}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <p className="text-xs text-[var(--color-text-muted)]">
+          Disabling a core automation here disables it everywhere. Detailed templates live in Automation Settings.
+        </p>
+      </GlassCard>
 
       {/* Loading */}
       {loading ? (
@@ -344,7 +543,7 @@ export default function WorkflowListPage() {
             <Button variant="secondary" onClick={() => setShowTemplateModal(true)}>
               Browse Templates
             </Button>
-            <Button variant="primary" onClick={() => navigate('/settings/workflows/new')}>
+            <Button variant="primary" onClick={() => navigate('/app/settings/workflows/new')}>
               Create from Scratch
             </Button>
           </div>
@@ -366,7 +565,7 @@ export default function WorkflowListPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <Link
-                        to={`/settings/workflows/${workflow.id}`}
+                        to={`/app/settings/workflows/${workflow.id}`}
                         className="text-white font-medium hover:text-[var(--color-accent)] transition-colors truncate"
                       >
                         {workflow.name}
@@ -424,7 +623,7 @@ export default function WorkflowListPage() {
                     />
                     <Button
                                             variant="ghost"
-                      onClick={() => navigate(`/settings/workflows/${workflow.id}`)}
+                      onClick={() => navigate(`/app/settings/workflows/${workflow.id}`)}
                     >
                       Edit
                     </Button>
@@ -500,3 +699,6 @@ export default function WorkflowListPage() {
     </div>
   )
 }
+
+
+

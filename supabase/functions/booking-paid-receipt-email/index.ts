@@ -311,6 +311,7 @@ Deno.serve(async (req) => {
 
   const occurrenceSelect = `
     id,
+    org_id,
     start_at,
     status,
     payment_status,
@@ -334,6 +335,17 @@ Deno.serve(async (req) => {
 
   if (occurrenceError || !occurrence) {
     return jsonResponse({ error: 'Occurrence not found' }, 404)
+  }
+
+  if ((occurrence as any).org_id) {
+    const { data: orgRow } = await supabase
+      .from('organizations')
+      .select('use_workflow_automations')
+      .eq('id', (occurrence as any).org_id)
+      .maybeSingle()
+    if (orgRow?.use_workflow_automations) {
+      return jsonResponse({ success: true, skipped: 'workflow_automations_enabled' })
+    }
   }
 
   if (occurrence.payment_status !== 'paid' && !payload.testOnly) {

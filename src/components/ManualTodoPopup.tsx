@@ -339,7 +339,7 @@ export default function ManualTodoPopup() {
               >
                 Refresh
               </button>
-              <a href="/todo" className="text-xs text-white/60 hover:text-white">
+              <a href="/app/todo" className="text-xs text-white/60 hover:text-white">
                 Open full todo page →
               </a>
             </div>

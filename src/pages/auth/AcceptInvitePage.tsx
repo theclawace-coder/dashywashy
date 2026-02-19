@@ -85,7 +85,7 @@ export default function AcceptInvitePage() {
         setInviteError(error.message || 'Failed to accept invite.')
       } else {
         setAccepted(true)
-        setTimeout(() => navigate('/'), 2000)
+        setTimeout(() => navigate('/app'), 2000)
       }
     } catch {
       setInviteError('An unexpected error occurred.')

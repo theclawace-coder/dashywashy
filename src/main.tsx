@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider } from './lib/auth'
+import { isMarketingPath } from './lib/marketing'
 import './index.css'
 import App from './App.tsx'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -12,6 +13,9 @@ const preloader = document.querySelector('.preloader')
 if (preloader) {
   preloader.remove()
 }
+
+const isMarketing = isMarketingPath(window.location.pathname)
+document.documentElement.classList.toggle('theme-day', isMarketing)
 
 createRoot(document.getElementById('root')!).render(
   <BrowserRouter>

@@ -283,6 +283,7 @@ export default function CleanersPayout() {
   }, [fetchData])
 
   const handleUpdatePayout = async (occurrenceId: string, payoutAmount: number) => {
+    if (!currentOrg) return
     setSavingId(occurrenceId)
     setError(null)
     setInfoMessage(null)
@@ -328,6 +329,7 @@ export default function CleanersPayout() {
   }
 
   const handleMarkPaid = async (occurrenceId: string) => {
+    if (!currentOrg) return
     setSavingId(occurrenceId)
     setError(null)
     setInfoMessage(null)
@@ -927,7 +929,7 @@ export default function CleanersPayout() {
                         )}
                         {quote?.id && (series.lead_id || series.lead_id === null || series.lead_id === undefined) && (
                           <a
-                            href={`/?lead=${series.lead_id ?? ''}&editQuote=${quote.id}&return=/cleaners-payout`}
+                            href={`/app/leads/${series.lead_id ?? ''}?editQuote=${quote.id}&return=/app/cleaners-payout`}
                             target="_blank"
                             rel="noreferrer"
                             className="px-3 py-2 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-100 text-sm border border-blue-400/40"

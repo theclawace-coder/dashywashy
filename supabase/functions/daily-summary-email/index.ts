@@ -206,6 +206,19 @@ Deno.serve(async (req) => {
   }
 
   const force = payload?.force === true
+
+  try {
+    const { data: orgRows } = await supabase
+      .from('organizations')
+      .select('id, use_workflow_automations')
+    const allMigrated = (orgRows || []).length > 0 && (orgRows || []).every((row: any) => row.use_workflow_automations)
+    if (allMigrated) {
+      return jsonResponse({ skipped: true, reason: 'workflow_automations_enabled' })
+    }
+  } catch {
+    // If org lookup fails, continue with legacy summary
+  }
+
   const { localNow } = getDateRangeForTimezone(summaryTimezone)
 
   let summaryDate = payload?.date || null

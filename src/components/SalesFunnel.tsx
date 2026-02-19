@@ -5,10 +5,11 @@
  * Glass columns, smooth animations, and clear visual hierarchy.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
-import { Button, useToast } from './ui'
+import { Button, Modal, useToast } from './ui'
 import SmsLead from './SmsLead'
 import QuoteTool from './QuoteTool'
 import BookingModal from './BookingModal'
@@ -26,6 +27,15 @@ type ExtractedLead = {
   first_contact?: string | null
   last_text_date?: string | null
   last_text_body?: string | null
+}
+
+type AutomationItem = {
+  id: string
+  label: string
+  status: string
+  type: 'workflow'
+  href: string
+  workflowId?: string
 }
 
 const STATUSES = ['Unanswered', 'Marketing Loop', 'Follow Up', 'Quote Sent', 'Job Won', 'Not interested', 'Jobs Completed']
@@ -84,6 +94,7 @@ function getLeadDisplayName(lead: ExtractedLead) {
 export default function SalesFunnel() {
   const { addToast } = useToast()
   const { currentOrg } = useAuth()
+  const navigate = useNavigate()
   const [leads, setLeads] = useState<ExtractedLead[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [savingId, setSavingId] = useState<string | null>(null)
@@ -96,6 +107,10 @@ export default function SalesFunnel() {
   const [bookingLead, setBookingLead] = useState<ExtractedLead | null>(null)
   const [pendingJobWonLead, setPendingJobWonLead] = useState<{ lead: ExtractedLead; fromStatus: string } | null>(null)
   const [expandedCard, setExpandedCard] = useState<string | null>(null)
+  const [automationByLead, setAutomationByLead] = useState<Record<string, AutomationItem[]>>({})
+  const [automationLeadId, setAutomationLeadId] = useState<string | null>(null)
+  const [automationLoading, setAutomationLoading] = useState(false)
+  const leadsRef = useRef<ExtractedLead[]>([])
 
   const fetchLeads = async () => {
     try {
@@ -105,6 +120,7 @@ export default function SalesFunnel() {
         .from('extracted_leads')
         .select('*')
         .eq('org_id', currentOrg.id)
+        .or('status.is.null,status.neq.Archived')
         .order('created_at', { ascending: false })
         .limit(200)
 
@@ -122,6 +138,67 @@ export default function SalesFunnel() {
       setIsLoading(false)
     }
   }
+
+  const fetchAutomations = useCallback(async () => {
+    if (!currentOrg) return
+    const currentLeads = leadsRef.current
+    if (currentLeads.length === 0) {
+      setAutomationByLead({})
+      setAutomationLoading(false)
+      return
+    }
+
+    setAutomationLoading(true)
+
+    try {
+      const leadIds = currentLeads.map((lead) => lead.id)
+      const chunkSize = 80
+      const nextMap: Record<string, AutomationItem[]> = {}
+
+      for (let i = 0; i < leadIds.length; i += chunkSize) {
+        const chunk = leadIds.slice(i, i + chunkSize)
+        const { data: runs, error: runsError } = await supabase
+          .from('workflow_runs')
+          .select('id, status, entity_id, workflow_id, workflow:workflows(id, name, system_key)')
+          .eq('org_id', currentOrg.id)
+          .eq('entity_type', 'lead')
+          .in('entity_id', chunk)
+          .in('status', ['active', 'paused'])
+
+        if (runsError) throw runsError
+
+        ;(runs || []).forEach((run: any) => {
+          const systemKey = run.workflow?.system_key || ''
+          const isMarketing = systemKey === 'marketing_sms' || systemKey === 'marketing_email'
+          const workflowName = isMarketing
+            ? systemKey === 'marketing_sms'
+              ? 'Marketing Loop (SMS)'
+              : 'Marketing Loop (Email)'
+            : run.workflow?.name || 'Workflow'
+          const entry: AutomationItem = {
+            id: run.id,
+            label: workflowName,
+            status: run.status || 'active',
+            type: 'workflow',
+            href: isMarketing ? '/app/automations?view=runs&preset=marketing_loop' : `/app/settings/workflows/${run.workflow_id}`,
+            workflowId: run.workflow_id,
+          }
+          if (!nextMap[run.entity_id]) nextMap[run.entity_id] = []
+          nextMap[run.entity_id].push(entry)
+        })
+      }
+
+      Object.values(nextMap).forEach((items) => {
+        items.sort((a, b) => a.label.localeCompare(b.label))
+      })
+
+      setAutomationByLead(nextMap)
+    } catch (err) {
+      console.error('Error fetching automations:', err)
+    } finally {
+      setAutomationLoading(false)
+    }
+  }, [currentOrg])
 
   const updateStatus = async (leadId: string, status: string, skipBookingPrompt = false) => {
     const lead = leads.find((l) => l.id === leadId)
@@ -294,12 +371,19 @@ export default function SalesFunnel() {
     const channel = supabase
       .channel('extracted_leads_funnel')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id }, () => fetchLeads())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'workflow_runs', filter: 'org_id=eq.' + currentOrg.id }, () => fetchAutomations())
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [])
+  }, [currentOrg, fetchAutomations])
+
+  useEffect(() => {
+    leadsRef.current = leads
+    if (!currentOrg) return
+    fetchAutomations()
+  }, [currentOrg, fetchAutomations, leads])
 
   const filteredLeads = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -464,6 +548,7 @@ export default function SalesFunnel() {
                       const isExpanded = expandedCard === lead.id
                       const lastCalled = formatRelativeTime(lead.first_contact)
                       const lastTexted = formatRelativeTime(lead.last_text_date)
+                      const automationCount = (automationByLead[lead.id] || []).length
 
                       return (
                         <div
@@ -510,6 +595,23 @@ export default function SalesFunnel() {
                                 </svg>
                               </button>
                             </div>
+
+                            {automationCount > 0 && (
+                              <div className="mb-2">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setAutomationLeadId(lead.id)
+                                  }}
+                                  className="flex items-center gap-2 px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-300 hover:border-emerald-400/50 transition-colors"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                  <span>
+                                    {automationCount} automation{automationCount === 1 ? '' : 's'} running
+                                  </span>
+                                </button>
+                              </div>
+                            )}
 
                             {/* Activity indicators */}
                             <div className="flex items-center gap-3 text-[10px] mb-2">
@@ -588,6 +690,21 @@ export default function SalesFunnel() {
                                 </svg>
                               </Button>
 
+                              <Button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  navigate(`/app/leads/${lead.id}`)
+                                }}
+                                variant="ghost"
+                                size="sm"
+                                data-testid="funnel-lead-profile"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                              </Button>
+
                               {lead.status === 'Job Won' && (
                                 <Button
                                   onClick={(e) => {
@@ -648,6 +765,51 @@ export default function SalesFunnel() {
           </div>
         </div>
       )}
+
+      <Modal
+        open={!!automationLeadId}
+        onClose={() => setAutomationLeadId(null)}
+        title="Active Automations"
+        description={
+          automationLeadId
+            ? `Currently running automations for ${getLeadDisplayName(leads.find((lead) => lead.id === automationLeadId) || { id: automationLeadId })}.`
+            : undefined
+        }
+        size="lg"
+      >
+        {automationLeadId && (
+          <div className="space-y-3">
+            {automationLoading && (
+              <p className="text-sm text-[var(--color-text-muted)]">Loading automation runs...</p>
+            )}
+            {!automationLoading && (automationByLead[automationLeadId] || []).length === 0 ? (
+              <p className="text-sm text-[var(--color-text-muted)]">No active automations found.</p>
+            ) : (
+              (automationByLead[automationLeadId] || []).map((automation) => (
+                <div
+                  key={automation.id}
+                  className="flex items-center justify-between gap-4 rounded-lg bg-white/5 border border-white/10 p-3"
+                >
+                  <div>
+                    <p className="text-sm text-white">{automation.label}</p>
+                    <p className="text-xs text-[var(--color-text-muted)]">Status: {automation.status}</p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setAutomationLeadId(null)
+                      navigate(automation.href)
+                    }}
+                  >
+                    View flow
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </Modal>
 
       {/* Booking Modals */}
       {pendingJobWonLead && (

@@ -1,9 +1,12 @@
 /**
  * BillingPage - Display current plan and upgrade options.
- * Stub for future subscription management.
+ * Shows usage against monthly job limits.
  */
 
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../../lib/auth'
+import { supabase } from '../../lib/supabase'
+import { getMonthlyJobLimit, getPlanLabel, getUtcMonthBounds, isAiEnabled } from '../../lib/plans'
 import { GlassCard, Button, Badge } from '../../components/ui'
 
 const PLANS = [
@@ -12,35 +15,63 @@ const PLANS = [
     name: 'Free',
     price: '$0',
     period: 'forever',
-    features: ['Up to 5 users', 'Up to 10 cleaners', 'Basic analytics', 'Email support'],
+    features: ['Up to 10 scheduled jobs / month', 'Core CRM features', 'Basic analytics', 'Email support'],
   },
   {
-    id: 'starter',
-    name: 'Starter',
-    price: '$49',
+    id: 'growth',
+    name: 'Growth',
+    price: '$20',
     period: '/month',
-    features: ['Up to 15 users', 'Up to 30 cleaners', 'Full analytics', 'SMS & email marketing', 'Priority support'],
-  },
-  {
-    id: 'pro',
-    name: 'Pro',
-    price: '$99',
-    period: '/month',
-    features: ['Up to 50 users', 'Unlimited cleaners', 'Advanced analytics', 'Custom branding', 'API access', 'Dedicated support'],
+    features: ['Up to 100 scheduled jobs / month', 'AI agent access', 'Dialpad integration', 'Priority support'],
     popular: true,
   },
   {
-    id: 'enterprise',
-    name: 'Enterprise',
-    price: 'Custom',
-    period: '',
-    features: ['Unlimited users', 'Unlimited cleaners', 'White-label', 'SLA guarantee', 'Custom integrations', 'Account manager'],
+    id: 'unlimited',
+    name: 'Unlimited',
+    price: '$49.95',
+    period: '/month',
+    features: ['Unlimited scheduled jobs', 'AI agent access', 'Advanced analytics', 'Workflow builder'],
   },
 ]
 
 export default function BillingPage() {
   const { currentOrg, hasRole } = useAuth()
   const currentPlan = currentOrg?.plan ?? 'free'
+  const [jobsUsed, setJobsUsed] = useState<number | null>(null)
+  const [usageError, setUsageError] = useState<string | null>(null)
+
+  const planLimit = useMemo(() => getMonthlyJobLimit(currentPlan), [currentPlan])
+  const planLabel = useMemo(() => getPlanLabel(currentPlan), [currentPlan])
+  const aiEnabled = useMemo(() => isAiEnabled(currentPlan), [currentPlan])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadUsage() {
+      if (!currentOrg) return
+      setUsageError(null)
+      const { start, end } = getUtcMonthBounds(new Date())
+      const { count, error } = await supabase
+        .from('booking_occurrences')
+        .select('id', { count: 'exact', head: true })
+        .eq('org_id', currentOrg.id)
+        .gte('created_at', start.toISOString())
+        .lt('created_at', end.toISOString())
+
+      if (cancelled) return
+
+      if (error) {
+        setUsageError(error.message)
+        setJobsUsed(null)
+      } else {
+        setJobsUsed(count ?? 0)
+      }
+    }
+
+    loadUsage()
+    return () => {
+      cancelled = true
+    }
+  }, [currentOrg?.id])
 
   if (!hasRole('owner')) {
     return (
@@ -59,15 +90,34 @@ export default function BillingPage() {
 
       {/* Current plan */}
       <GlassCard className="p-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-heading text-white">Current Plan</h2>
             <p className="text-caption mt-1">
-              You are on the <strong className="text-white capitalize">{currentPlan}</strong> plan.
+              You are on the <strong className="text-white capitalize">{planLabel}</strong> plan.
+            </p>
+            <p className="text-caption mt-1">
+              AI agent: <span className={aiEnabled ? 'text-emerald-300' : 'text-amber-300'}>{aiEnabled ? 'Enabled' : 'Upgrade required'}</span>
             </p>
           </div>
-          <Badge variant="info">{currentPlan}</Badge>
+          <Badge variant="info">{planLabel}</Badge>
         </div>
+      </GlassCard>
+
+      {/* Usage */}
+      <GlassCard className="p-6">
+        <h2 className="text-heading text-white mb-2">Monthly Job Usage</h2>
+        {usageError ? (
+          <p className="text-caption text-red-400">Unable to load usage: {usageError}</p>
+        ) : (
+          <p className="text-caption">
+            {jobsUsed === null
+              ? 'Loading usage…'
+              : planLimit === null
+              ? `${jobsUsed} scheduled jobs this month (Unlimited).`
+              : `${jobsUsed} of ${planLimit} scheduled jobs used this month.`}
+          </p>
+        )}
       </GlassCard>
 
       {/* Plan comparison */}

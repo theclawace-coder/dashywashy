@@ -31,7 +31,7 @@ export default function LoginPage() {
         return
       }
 
-      navigate('/')
+      navigate('/app')
     } catch (err) {
       setError('An unexpected error occurred. Please try again.')
     } finally {

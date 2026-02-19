@@ -105,11 +105,66 @@ Deno.serve(async (req) => {
       throw new Error(error.message);
     }
 
+    // Auto-extract lead info for emails matching lead patterns
+    const leadPatterns = [
+      /^New message from\s+["'][^"']+["']$/i,
+      /^New Meta Lead$/i,
+      /^New Entry - Lead Form$/i,
+    ];
+    const normalizeSubject = (s: string) =>
+      s.replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").trim();
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    let autoExtracted = 0;
+
+    for (const msg of allMessages) {
+      if (!msg.subject) continue;
+      const normalized = normalizeSubject(msg.subject);
+      const isLead = leadPatterns.some((p) => p.test(normalized));
+      if (!isLead) continue;
+
+      // Look up the inserted email row to get its UUID
+      const { data: emailRow } = await supabaseAdmin
+        .from("dialpad_emails")
+        .select("id")
+        .eq("message_id", msg.message_id)
+        .maybeSingle();
+
+      if (!emailRow?.id) continue;
+
+      // Check if lead already extracted for this email
+      const { data: existingLead } = await supabaseAdmin
+        .from("extracted_leads")
+        .select("id")
+        .eq("email_id", emailRow.id)
+        .maybeSingle();
+
+      if (existingLead) continue;
+
+      // Call extract-lead-info edge function (service-to-service with X-Org-Id)
+      try {
+        await fetch(`${supabaseUrl}/functions/v1/extract-lead-info`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${supabaseServiceKey}`,
+            "X-Org-Id": orgId,
+          },
+          body: JSON.stringify({ email_id: emailRow.id }),
+        });
+        autoExtracted++;
+      } catch (extractErr) {
+        console.error(`[Email Sync] Auto-extract failed for email ${emailRow.id}`, extractErr);
+      }
+    }
+
     return jsonResponse({
       success: true,
       total: allMessages.length,
       inbox: inbound.length,
       sent: outbound.length,
+      autoExtracted,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

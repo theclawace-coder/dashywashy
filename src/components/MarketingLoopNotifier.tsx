@@ -20,23 +20,39 @@ export default function MarketingLoopNotifier() {
   useEffect(() => {
     if (!currentOrg) return
 
-    const pushNotification = async (payload: any, channel: 'sms' | 'email') => {
+    const pushNotification = async (payload: any) => {
       const log = payload?.new
-      if (!log?.lead_id || log?.status !== 'sent') return
+      if (!log?.run_id || log?.status !== 'success') return
+      if (log?.action_type !== 'send_sms' && log?.action_type !== 'send_email') return
+
+      const { data: run } = await supabase
+        .from('workflow_runs')
+        .select('entity_type, entity_id, workflow:workflows(system_key)')
+        .eq('org_id', currentOrg.id)
+        .eq('id', log.run_id)
+        .maybeSingle()
+
+      const workflow = Array.isArray((run as any)?.workflow) ? (run as any)?.workflow[0] : (run as any)?.workflow
+      const systemKey = workflow?.system_key as string | undefined
+      if (systemKey !== 'marketing_sms' && systemKey !== 'marketing_email') return
+      if ((run as any)?.entity_type !== 'lead' || !(run as any)?.entity_id) return
+
+      const channel: 'sms' | 'email' = log.action_type === 'send_sms' ? 'sms' : 'email'
 
       const { data: lead } = await supabase
         .from('extracted_leads')
         .select('name')
         .eq('org_id', currentOrg.id)
-        .eq('id', log.lead_id)
+        .eq('id', (run as any).entity_id)
         .maybeSingle()
 
       const leadName = lead?.name || 'Unknown lead'
-      const id = `${channel}-${log.id || `${log.lead_id}-${log.step}-${Date.now()}`}`
+      const entityId = String((run as any).entity_id)
+      const id = `${channel}-${log.id || `${entityId}-${log.step_order}-${Date.now()}`}`
       const item: NotificationItem = {
         id,
         channel,
-        step: Number(log.step || 1),
+        step: Number(log.step_order || 1),
         leadName,
         createdAt: log.created_at || new Date().toISOString(),
       }
@@ -53,13 +69,8 @@ export default function MarketingLoopNotifier() {
       .channel('marketing_loop_notifications')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'marketing_sms_logs', filter: 'org_id=eq.' + currentOrg.id },
-        (payload) => pushNotification(payload, 'sms')
-      )
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'marketing_email_logs', filter: 'org_id=eq.' + currentOrg.id },
-        (payload) => pushNotification(payload, 'email')
+        { event: 'INSERT', schema: 'public', table: 'workflow_step_logs', filter: 'org_id=eq.' + currentOrg.id },
+        (payload) => pushNotification(payload)
       )
       .subscribe()
 

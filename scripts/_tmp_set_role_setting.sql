@@ -1,0 +1,1 @@
+ALTER ROLE postgres SET app.settings.service_role_key = 'test';

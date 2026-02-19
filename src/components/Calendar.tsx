@@ -84,6 +84,7 @@ const CALENDAR_VIEWS = ['dayGridMonth', 'timeGridWeek', 'timeGridDay'] as const
 type CalendarView = (typeof CALENDAR_VIEWS)[number]
 const isCalendarView = (val: string | null | undefined): val is CalendarView =>
   CALENDAR_VIEWS.includes(val as CalendarView)
+type RescheduleScope = 'single' | 'future'
 
 async function mapboxSuggest(query: string, token: string | null) {
   if (!token) return []
@@ -117,8 +118,12 @@ function EventDetailModal({
 }: {
   event: CalendarEvent
   onClose: () => void
-  onStatusChange: (occurrenceId: string, status: string) => Promise<boolean>
-  onReschedule: (occurrenceId: string, newStart: Date) => Promise<void>
+  onStatusChange: (
+    occurrenceId: string,
+    status: string,
+    options?: { cancellationNote?: string }
+  ) => Promise<boolean>
+  onReschedule: (occurrenceId: string, newStart: Date, scope: RescheduleScope) => Promise<void>
   cleaners: Cleaner[]
   onAssignCleaner: (occurrenceId: string, cleanerId: string | null) => Promise<void>
   onUpdateSeriesAddress: (
@@ -137,6 +142,7 @@ function EventDetailModal({
   const [isUpdating, setIsUpdating] = useState(false)
   const [newDate, setNewDate] = useState(format(new Date(occurrence.start_at), 'yyyy-MM-dd'))
   const [newTime, setNewTime] = useState(format(new Date(occurrence.start_at), 'HH:mm'))
+  const [rescheduleScope, setRescheduleScope] = useState<RescheduleScope>('single')
   const [showReschedule, setShowReschedule] = useState(false)
   const [assigningCleaner, setAssigningCleaner] = useState(false)
   const [updatingAddress, setUpdatingAddress] = useState(false)
@@ -240,7 +246,7 @@ function EventDetailModal({
     setIsUpdating(true)
     try {
       const newStart = new Date(`${newDate}T${newTime}:00`)
-      await onReschedule(occurrence.id, newStart)
+      await onReschedule(occurrence.id, newStart, rescheduleScope)
       onClose()
     } finally {
       setIsUpdating(false)
@@ -538,13 +544,28 @@ function EventDetailModal({
                     />
                   </div>
                 </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Apply changes to</label>
+                  <select
+                    value={rescheduleScope}
+                    onChange={(e) => setRescheduleScope(e.target.value as RescheduleScope)}
+                    className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                  >
+                    <option value="single" className="bg-[#1a1d24]">
+                      This booking only
+                    </option>
+                    <option value="future" className="bg-[#1a1d24]">
+                      All future bookings
+                    </option>
+                  </select>
+                </div>
                 <Button
                   onClick={handleReschedule}
                   disabled={isUpdating}
                   variant="primary"
                   className="w-full"
                 >
-                  {isUpdating ? 'Moving...' : 'Move to new time'}
+                  {isUpdating ? 'Moving...' : rescheduleScope === 'future' ? 'Move all future bookings' : 'Move to new time'}
                 </Button>
               </div>
             )}
@@ -608,6 +629,17 @@ export default function Calendar() {
   const [reviewRating, setReviewRating] = useState<number>(5)
   const [reviewNotes, setReviewNotes] = useState<string>('')
   const [savingReview, setSavingReview] = useState(false)
+  const [cancelTarget, setCancelTarget] = useState<{
+    occurrenceId: string
+    previousStatus: string
+    leadId: string | null
+    leadName: string
+    seriesTitle: string
+    startAt: string
+  } | null>(null)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  const [savingCancellation, setSavingCancellation] = useState(false)
   const [mapboxToken, setMapboxToken] = useState<string | null>(null)
   const [mapboxError, setMapboxError] = useState<string | null>(null)
   const [deletingLeadId, setDeletingLeadId] = useState<string | null>(null)
@@ -788,70 +820,170 @@ export default function Calendar() {
   }, [currentOrg])
 
   // Update occurrence status
-  const handleStatusChange = useCallback(async (occurrenceId: string, status: string) => {
-    setActionError(null)
-    const { error } = await supabase
-      .from('booking_occurrences')
-      .update({ status })
-      .eq('id', occurrenceId)
-      .eq('org_id', currentOrg!.id)
+  const handleStatusChange = useCallback(
+    async (occurrenceId: string, status: string, options?: { cancellationNote?: string }) => {
+      setActionError(null)
+      const ev = events.find((e) => e.id === occurrenceId) || selectedEvent || null
+      const leadId = ev?.extendedProps?.series?.lead_id || ev?.extendedProps?.lead?.id || null
+      const leadName = ev?.extendedProps?.lead?.name || 'Customer'
+      const seriesTitle = ev?.extendedProps?.series?.title || 'Job'
+      const startAt = ev?.extendedProps?.occurrence?.start_at || new Date().toISOString()
+      const previousStatus = ev?.extendedProps?.occurrence?.status || 'scheduled'
+      const cancellationNote = options?.cancellationNote?.trim() || ''
 
-    if (error) {
-      console.error('Error updating status:', error)
-      setActionError(error.message || 'Could not update status. Please try again.')
-      return false
-    }
-
-    // Best-effort: sync lead status for completed jobs
-    if (status === 'completed') {
-      try {
-        const ev = events.find((e) => e.id === occurrenceId) || selectedEvent || null
-        const leadId = ev?.extendedProps?.series?.lead_id || ev?.extendedProps?.lead?.id || null
-        if (leadId) {
-          await supabase.from('extracted_leads').update({ status: 'Jobs Completed' }).eq('id', leadId).eq('org_id', currentOrg!.id)
-        }
-      } catch (leadErr) {
-        console.warn('Failed to update lead status for completed job', leadErr)
-      }
-    }
-
-    // Refresh events
-    fetchBookings(dateRange.start, dateRange.end)
-
-    // Prompt review when moving to completed (only if a cleaner is assigned and no review exists yet)
-    if (status === 'completed') {
-      try {
-        const { data: existing } = await supabase
-          .from('cleaner_job_reviews')
-          .select('id')
-          .eq('occurrence_id', occurrenceId)
-          .limit(1)
-        if (existing && existing.length > 0) return true
-
-        const ev = events.find((e) => e.id === occurrenceId) || selectedEvent || null
-        const occCleanerId = ev?.extendedProps?.occurrence?.cleaner_id || null
-        if (!occCleanerId) return true
-
-        const cleaner = cleaners.find((c) => c.id === occCleanerId)
-        if (!cleaner) return true
-
-        setReviewError(null)
-        setReviewRating(5)
-        setReviewNotes('')
-        setReviewTarget({
+      if (status === 'cancelled' && !cancellationNote) {
+        setCancelError(null)
+        setCancelReason('')
+        setCancelTarget({
           occurrenceId,
-          cleanerId: occCleanerId,
-          cleanerName: cleaner.full_name,
-          leadName: ev?.extendedProps?.lead?.name || 'Customer',
-          seriesTitle: ev?.extendedProps?.series?.title || 'Job',
-          startAt: ev?.extendedProps?.occurrence?.start_at || new Date().toISOString(),
+          previousStatus,
+          leadId,
+          leadName,
+          seriesTitle,
+          startAt,
         })
-      } catch (err) {
-        console.error('Failed to prepare review modal', err)
+        return false
       }
+
+      const { error } = await supabase
+        .from('booking_occurrences')
+        .update({ status })
+        .eq('id', occurrenceId)
+        .eq('org_id', currentOrg!.id)
+
+      if (error) {
+        console.error('Error updating status:', error)
+        setActionError(error.message || 'Could not update status. Please try again.')
+        if (status === 'cancelled') {
+          setCancelError(error.message || 'Could not cancel appointment. Please try again.')
+        }
+        return false
+      }
+
+      if (status === 'cancelled') {
+        if (leadId) {
+          const dateLabel = (() => {
+            const parsed = new Date(startAt)
+            if (Number.isNaN(parsed.getTime())) return startAt
+            return format(parsed, 'MMMM d, yyyy')
+          })()
+          const journalBody = `${seriesTitle} - ${leadName} - ${dateLabel} Cancelled - ${cancellationNote}`
+          const { error: journalError } = await supabase.from('lead_journal_entries').insert({
+            org_id: currentOrg!.id,
+            lead_id: leadId,
+            entry_type: 'note',
+            body: journalBody,
+          })
+
+          if (journalError) {
+            console.error('Error saving cancellation note:', journalError)
+            const rollbackStatus = previousStatus || 'scheduled'
+            const { error: rollbackError } = await supabase
+              .from('booking_occurrences')
+              .update({ status: rollbackStatus })
+              .eq('id', occurrenceId)
+              .eq('org_id', currentOrg!.id)
+            if (rollbackError) {
+              console.error('Error rolling back cancelled status:', rollbackError)
+              const msg = 'Could not save cancellation note. Appointment may still be cancelled.'
+              setActionError(msg)
+              setCancelError(msg)
+            } else {
+              const msg = 'Could not save cancellation note. Cancellation was not applied.'
+              setActionError(msg)
+              setCancelError(msg)
+            }
+            fetchBookings(dateRange.start, dateRange.end)
+            return false
+          }
+        }
+
+        fetchBookings(dateRange.start, dateRange.end)
+        return true
+      }
+
+      // Best-effort: sync lead status for completed jobs
+      if (status === 'completed') {
+        try {
+          if (leadId) {
+            await supabase.from('extracted_leads').update({ status: 'Jobs Completed' }).eq('id', leadId).eq('org_id', currentOrg!.id)
+          }
+        } catch (leadErr) {
+          console.warn('Failed to update lead status for completed job', leadErr)
+        }
+      }
+
+      // Refresh events
+      fetchBookings(dateRange.start, dateRange.end)
+
+      // Prompt review when moving to completed (only if a cleaner is assigned and no review exists yet)
+      if (status === 'completed') {
+        try {
+          const { data: existing } = await supabase
+            .from('cleaner_job_reviews')
+            .select('id')
+            .eq('occurrence_id', occurrenceId)
+            .limit(1)
+          if (existing && existing.length > 0) return true
+
+          const ev = events.find((e) => e.id === occurrenceId) || selectedEvent || null
+          const occCleanerId = ev?.extendedProps?.occurrence?.cleaner_id || null
+          if (!occCleanerId) return true
+
+          const cleaner = cleaners.find((c) => c.id === occCleanerId)
+          if (!cleaner) return true
+
+          setReviewError(null)
+          setReviewRating(5)
+          setReviewNotes('')
+          setReviewTarget({
+            occurrenceId,
+            cleanerId: occCleanerId,
+            cleanerName: cleaner.full_name,
+            leadName: ev?.extendedProps?.lead?.name || 'Customer',
+            seriesTitle: ev?.extendedProps?.series?.title || 'Job',
+            startAt: ev?.extendedProps?.occurrence?.start_at || new Date().toISOString(),
+          })
+        } catch (err) {
+          console.error('Failed to prepare review modal', err)
+        }
+      }
+
+      return true
+    },
+    [cleaners, currentOrg, dateRange, events, fetchBookings, selectedEvent]
+  )
+
+  const closeCancellationModal = useCallback(() => {
+    if (savingCancellation) return
+    setCancelTarget(null)
+    setCancelReason('')
+    setCancelError(null)
+  }, [savingCancellation])
+
+  const confirmCancellation = useCallback(async () => {
+    if (!cancelTarget) return
+    const reason = cancelReason.trim()
+    if (!reason) {
+      setCancelError('Please enter a cancellation reason.')
+      return
     }
-    return true
-  }, [cleaners, dateRange, events, fetchBookings, selectedEvent])
+
+    setSavingCancellation(true)
+    setCancelError(null)
+    try {
+      const ok = await handleStatusChange(cancelTarget.occurrenceId, 'cancelled', { cancellationNote: reason })
+      if (!ok) return
+
+      playSaveSound()
+      setCancelTarget(null)
+      setCancelReason('')
+      setCancelError(null)
+      setSelectedEvent(null)
+    } finally {
+      setSavingCancellation(false)
+    }
+  }, [cancelReason, cancelTarget, handleStatusChange])
 
   const handleAssignCleaner = useCallback(
     async (occurrenceId: string, cleanerId: string | null) => {
@@ -908,31 +1040,73 @@ export default function Calendar() {
   }
 
   // Reschedule occurrence
-  const handleReschedule = useCallback(async (occurrenceId: string, newStart: Date) => {
+  const handleReschedule = useCallback(async (occurrenceId: string, newStart: Date, scope: RescheduleScope) => {
     // Find the occurrence to get duration
     const event = events.find(e => e.id === occurrenceId)
     if (!event) return
 
     const duration = event.extendedProps.series.duration_minutes
     const newEnd = new Date(newStart.getTime() + duration * 60 * 1000)
-    const originalStartAt = event.extendedProps.occurrence.original_start_at || event.extendedProps.occurrence.start_at
+    const selectedOccurrence = event.extendedProps.occurrence
+    const originalStartAt = selectedOccurrence.original_start_at || selectedOccurrence.start_at
 
-    const { error } = await supabase
-      .from('booking_occurrences')
-      .update({
-        start_at: newStart.toISOString(),
-        end_at: newEnd.toISOString(),
-        original_start_at: originalStartAt,
-      })
-      .eq('id', occurrenceId)
-      .eq('org_id', currentOrg!.id)
+    try {
+      if (scope === 'future') {
+        const selectedStart = new Date(selectedOccurrence.start_at)
+        if (Number.isNaN(selectedStart.getTime())) {
+          throw new Error('Invalid booking start time')
+        }
 
-    if (error) {
+        const deltaMs = newStart.getTime() - selectedStart.getTime()
+        if (deltaMs === 0) {
+          return
+        }
+        const { data: futureOccurrences, error: futureError } = await supabase
+          .from('booking_occurrences')
+          .select('id, start_at, end_at, original_start_at')
+          .eq('series_id', selectedOccurrence.series_id)
+          .eq('org_id', currentOrg!.id)
+          .gte('start_at', selectedOccurrence.start_at)
+          .eq('status', 'scheduled')
+          .order('start_at', { ascending: true })
+
+        if (futureError) throw futureError
+
+        const rows = futureOccurrences || []
+        for (const row of rows) {
+          const rowStart = new Date(row.start_at)
+          const rowEnd = new Date(row.end_at)
+          const shiftedStart = new Date(rowStart.getTime() + deltaMs)
+          const shiftedEnd = new Date(rowEnd.getTime() + deltaMs)
+          const { error: rowError } = await supabase
+            .from('booking_occurrences')
+            .update({
+              start_at: shiftedStart.toISOString(),
+              end_at: shiftedEnd.toISOString(),
+              original_start_at: row.original_start_at || row.start_at,
+            })
+            .eq('id', row.id)
+            .eq('org_id', currentOrg!.id)
+          if (rowError) throw rowError
+        }
+      } else {
+        const { error } = await supabase
+          .from('booking_occurrences')
+          .update({
+            start_at: newStart.toISOString(),
+            end_at: newEnd.toISOString(),
+            original_start_at: originalStartAt,
+          })
+          .eq('id', occurrenceId)
+          .eq('org_id', currentOrg!.id)
+        if (error) throw error
+      }
+
+      fetchBookings(dateRange.start, dateRange.end)
+    } catch (error) {
       console.error('Error rescheduling:', error)
-      return
+      setActionError(error instanceof Error ? error.message : 'Could not reschedule booking. Please try again.')
     }
-
-    fetchBookings(dateRange.start, dateRange.end)
   }, [events, fetchBookings, dateRange, currentOrg])
 
   const handleDeleteLead = useCallback(
@@ -1291,6 +1465,100 @@ export default function Calendar() {
                   }
                 >
                   {savingReview ? 'Saving…' : 'Save review'}
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* Cancellation Modal (required note) */}
+      {cancelTarget &&
+        createPortal(
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-[10001] p-4 animate-in fade-in duration-200"
+            onClick={closeCancellationModal}
+          >
+            <div
+              className="glass-card w-full max-w-md overflow-hidden shadow-2xl animate-in zoom-in-95 slide-in-from-bottom-4 duration-300"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-5 border-b border-white/10 bg-gradient-to-r from-rose-500/10 to-orange-500/10">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center">
+                      <svg className="w-5 h-5 text-rose-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="text-white font-semibold text-lg">Cancel appointment</h3>
+                      <p className="text-sm text-[var(--color-text-muted)] mt-0.5">
+                        {cancelTarget.leadName} - {format(new Date(cancelTarget.startAt), 'EEE, MMM d')}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={closeCancellationModal}
+                    className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all hover:scale-110"
+                    disabled={savingCancellation}
+                  >
+                    <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
+                    Cancellation reason
+                  </label>
+                  <textarea
+                    value={cancelReason}
+                    onChange={(e) => setCancelReason(e.target.value)}
+                    rows={4}
+                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/40 focus:border-rose-500/40 transition-all placeholder:text-[var(--color-text-muted)]"
+                    placeholder="Add a quick note for the client journal..."
+                  />
+                  <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                    This note will be saved to the lead journal.
+                  </p>
+                </div>
+
+                {cancelError && (
+                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-sm flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {cancelError}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-5 border-t border-white/10 bg-white/[0.02] flex items-center justify-between gap-3">
+                <Button variant="secondary" onClick={closeCancellationModal} disabled={savingCancellation}>
+                  Back
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={confirmCancellation}
+                  disabled={savingCancellation || !cancelReason.trim()}
+                  icon={
+                    savingCancellation ? (
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    )
+                  }
+                >
+                  {savingCancellation ? 'Cancelling...' : 'Cancel appointment'}
                 </Button>
               </div>
             </div>

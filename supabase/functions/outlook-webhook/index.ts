@@ -122,7 +122,9 @@ Deno.serve(async (req) => {
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
   try {
-    await supabase.from("webhook_logs").insert({ payload, event_type: "outlook-webhook" });
+    await supabase.from("webhook_logs").insert({
+      payload: { ...payload, _event_type: "outlook-webhook", _source: "outlook" },
+    });
   } catch (error) {
     console.error("Failed to log webhook payload", error);
   }
@@ -199,6 +201,56 @@ Deno.serve(async (req) => {
         .upsert(rows, { onConflict: "message_id" });
       if (error) {
         throw new Error(error.message);
+      }
+
+      // Auto-extract lead info for emails matching lead patterns
+      const leadPatterns = [
+        /^New message from\s+["'][^"']+["']$/i,
+        /^New Meta Lead$/i,
+        /^New Entry - Lead Form$/i,
+      ];
+      const normalizeSubject = (s: string) =>
+        s.replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").trim();
+
+      for (const row of rows) {
+        if (!row.subject) continue;
+        const normalized = normalizeSubject(row.subject);
+        const isLead = leadPatterns.some((p) => p.test(normalized));
+        if (!isLead) continue;
+
+        // Look up the inserted email row to get its UUID
+        const { data: emailRow } = await supabase
+          .from("dialpad_emails")
+          .select("id")
+          .eq("message_id", row.message_id)
+          .maybeSingle();
+
+        if (!emailRow?.id) continue;
+
+        // Check if lead already extracted for this email
+        const { data: existingLead } = await supabase
+          .from("extracted_leads")
+          .select("id")
+          .eq("email_id", emailRow.id)
+          .maybeSingle();
+
+        if (existingLead) continue;
+
+        // Call extract-lead-info edge function (service-to-service with X-Org-Id)
+        try {
+          await fetch(`${supabaseUrl}/functions/v1/extract-lead-info`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${supabaseServiceKey}`,
+              "X-Org-Id": orgId,
+            },
+            body: JSON.stringify({ email_id: emailRow.id }),
+          });
+          console.log(`[Outlook Webhook] Auto-extracted lead for email ${emailRow.id}`);
+        } catch (extractErr) {
+          console.error(`[Outlook Webhook] Auto-extract failed for email ${emailRow.id}`, extractErr);
+        }
       }
     }
 

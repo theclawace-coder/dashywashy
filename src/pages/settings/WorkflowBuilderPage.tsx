@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WorkflowBuilderPage - Visual no-code workflow builder.
  * Create and edit automated workflows with triggers and action steps.
  */
@@ -13,16 +13,21 @@ import { GlassCard, Button, Input, Badge, Modal, Switch } from '../../components
 // Types
 // -----------------------------------------------------------------------------
 
-type TriggerType = 'lead_status_change' | 'time_based' | 'event_based'
+type TriggerType = 'lead_status_change' | 'time_based' | 'event_based' | 'manual' | 'scheduled'
 type ActionType = 'send_sms' | 'send_email' | 'make_call' | 'update_status' | 'wait'
 
 interface TriggerConfig {
   to_status?: string[]
   from_status?: string[]
-  entity_type?: 'booking' | 'quote'
+  entity_type?: 'lead' | 'booking'
   relative_to?: string
   offset_days?: number
+  offset_value?: number
+  offset_unit?: 'minutes' | 'hours' | 'days'
   event?: string
+  time?: string
+  timezone?: string
+  cancel_on_status_change?: boolean
 }
 
 interface ActionConfig {
@@ -67,6 +72,12 @@ const TRIGGER_OPTIONS: Array<{
     description: 'When a lead moves to a specific status',
   },
   {
+    type: 'manual',
+    icon: '🖱️',
+    title: 'Manual',
+    description: 'Run on demand from a lead or booking',
+  },
+  {
     type: 'time_based',
     icon: '⏰',
     title: 'Time-Based',
@@ -78,8 +89,13 @@ const TRIGGER_OPTIONS: Array<{
     title: 'Event',
     description: 'When something happens (quote sent, payment received)',
   },
+  {
+    type: 'scheduled',
+    icon: '📆',
+    title: 'Scheduled',
+    description: 'Run daily at a specific time',
+  },
 ]
-
 const ACTION_OPTIONS: Array<{
   type: ActionType
   icon: string
@@ -93,28 +109,31 @@ const ACTION_OPTIONS: Array<{
   { type: 'wait', icon: '⏳', title: 'Wait', description: 'Pause before next action' },
 ]
 
+const ACTION_STYLES: Record<ActionType, { accent: string; glow: string }> = {
+  send_sms: { accent: 'border-emerald-400/40', glow: 'shadow-emerald-500/20' },
+  send_email: { accent: 'border-sky-400/40', glow: 'shadow-sky-500/20' },
+  make_call: { accent: 'border-rose-400/40', glow: 'shadow-rose-500/20' },
+  update_status: { accent: 'border-violet-400/40', glow: 'shadow-violet-500/20' },
+  wait: { accent: 'border-amber-400/40', glow: 'shadow-amber-500/20' },
+}
+
 const LEAD_STATUSES = [
-  'New Lead',
-  'Contacted',
-  'Quote Sent',
-  'Follow Up',
+  'Unanswered',
   'Marketing Loop',
-  'Negotiating',
-  'Booked',
-  'Completed',
-  'Lost',
-  'Not Interested',
+  'Follow Up',
+  'Quote Sent',
+  'Job Won',
+  'Jobs Completed',
+  'Not interested',
 ]
 
 const EVENTS = [
   { value: 'lead_created', label: 'New lead is created' },
-  { value: 'quote_sent', label: 'Quote is sent' },
-  { value: 'quote_accepted', label: 'Quote is accepted' },
   { value: 'booking_created', label: 'Booking is created' },
   { value: 'booking_completed', label: 'Booking is completed' },
-  { value: 'payment_received', label: 'Payment is received' },
+  { value: 'cleaner_assigned', label: 'Cleaner is assigned' },
+  { value: 'booking_paid', label: 'Booking is paid' },
 ]
-
 const PLACEHOLDERS = [
   { key: '{{name}}', label: 'Name' },
   { key: '{{first_name}}', label: 'First Name' },
@@ -172,27 +191,73 @@ function TriggerConfigPanel({
             <p className="text-xs text-amber-400 mt-2">Select at least one status</p>
           )}
         </div>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs text-white font-medium">Cancel when status changes</p>
+            <p className="text-[11px] text-[var(--color-text-muted)]">Stops active runs if the lead leaves the trigger status.</p>
+          </div>
+          <input
+            type="checkbox"
+            className="h-4 w-4"
+            checked={Boolean(config.cancel_on_status_change)}
+            onChange={(e) => onChange({ ...config, cancel_on_status_change: e.target.checked })}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (triggerType === 'manual') {
+    return (
+      <div className="space-y-3">
+        <div>
+          <label className="text-micro block mb-1.5">RUN THIS WORKFLOW FROM</label>
+          <div className="grid grid-cols-2 gap-2">
+            {(['lead', 'booking'] as const).map((type) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => onChange({ ...config, entity_type: type })}
+                className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                  (config.entity_type || 'lead') === type
+                    ? 'bg-[var(--color-accent)] text-white'
+                    : 'bg-white/10 text-[var(--color-text-secondary)] hover:bg-white/20'
+                }`}
+              >
+                {type === 'lead' ? 'Lead' : 'Booking / Job'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="text-caption">Manual workflows are triggered from the lead profile or booking modal.</p>
       </div>
     )
   }
 
   if (triggerType === 'time_based') {
+    const rawValue =
+      typeof config.offset_value === 'number'
+        ? config.offset_value
+        : typeof config.offset_days === 'number'
+        ? config.offset_days
+        : 0
+    const unit = config.offset_unit || 'days'
+    const isBefore = rawValue < 0
+    const absValue = Math.abs(rawValue)
+
     return (
       <div className="space-y-4">
-        <div className="grid md:grid-cols-3 gap-3">
+        <div className="grid md:grid-cols-4 gap-3">
           <div>
-            <label className="text-micro block mb-1.5">DAYS</label>
+            <label className="text-micro block mb-1.5">AMOUNT</label>
             <input
               type="number"
               className="input w-full"
-              value={Math.abs(config.offset_days || 0)}
+              value={absValue}
               onChange={(e) =>
                 onChange({
                   ...config,
-                  offset_days:
-                    (config.offset_days || 0) < 0
-                      ? -Math.abs(Number(e.target.value))
-                      : Math.abs(Number(e.target.value)),
+                  offset_value: isBefore ? -Math.abs(Number(e.target.value)) : Math.abs(Number(e.target.value)),
                 })
               }
               min={0}
@@ -202,19 +267,29 @@ function TriggerConfigPanel({
             <label className="text-micro block mb-1.5">TIMING</label>
             <select
               className="input w-full"
-              value={(config.offset_days || 0) < 0 ? 'before' : 'after'}
+              value={isBefore ? 'before' : 'after'}
               onChange={(e) =>
                 onChange({
                   ...config,
-                  offset_days:
-                    e.target.value === 'before'
-                      ? -Math.abs(config.offset_days || 0)
-                      : Math.abs(config.offset_days || 0),
+                  offset_value:
+                    e.target.value === 'before' ? -Math.abs(rawValue || 0) : Math.abs(rawValue || 0),
                 })
               }
             >
               <option value="before">Before</option>
               <option value="after">After</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-micro block mb-1.5">UNIT</label>
+            <select
+              className="input w-full"
+              value={unit}
+              onChange={(e) => onChange({ ...config, offset_unit: e.target.value as TriggerConfig['offset_unit'] })}
+            >
+              <option value="minutes">Minutes</option>
+              <option value="hours">Hours</option>
+              <option value="days">Days</option>
             </select>
           </div>
           <div>
@@ -231,7 +306,8 @@ function TriggerConfigPanel({
           </div>
         </div>
         <p className="text-caption">
-          Example: "2 days before Booking Start" will trigger the workflow 48 hours prior.
+          Example: "2 hours before Booking Start" will trigger the workflow ahead of the clean.
+          Time-based triggers run on booking occurrences.
         </p>
       </div>
     )
@@ -261,9 +337,37 @@ function TriggerConfigPanel({
     )
   }
 
+  if (triggerType === 'scheduled') {
+    return (
+      <div className="space-y-4">
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <label className="text-micro block mb-1.5">TIME (LOCAL)</label>
+            <input
+              type="time"
+              className="input w-full"
+              value={config.time || '18:00'}
+              onChange={(e) => onChange({ ...config, time: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="text-micro block mb-1.5">TIMEZONE</label>
+            <input
+              type="text"
+              className="input w-full"
+              value={config.timezone || 'Australia/Sydney'}
+              onChange={(e) => onChange({ ...config, timezone: e.target.value })}
+              placeholder="Australia/Sydney"
+            />
+          </div>
+        </div>
+        <p className="text-caption">Scheduled workflows run daily at the specified time.</p>
+      </div>
+    )
+  }
+
   return null
 }
-
 function ActionStepCard({
   step,
   index,
@@ -282,6 +386,7 @@ function ActionStepCard({
   onMoveDown: () => void
 }) {
   const actionInfo = ACTION_OPTIONS.find((a) => a.type === step.action_type)
+  const actionStyle = ACTION_STYLES[step.action_type]
 
   const getPreview = () => {
     const { action_type, action_config } = step
@@ -304,10 +409,10 @@ function ActionStepCard({
   }
 
   return (
-    <div className="flex items-start gap-3 p-4 rounded-lg bg-white/5 border border-white/10 group">
+    <div className={`flex items-start gap-3 p-4 rounded-lg bg-white/5 border ${actionStyle.accent} ${actionStyle.glow} shadow-lg group`}>
       {/* Step number */}
-      <div className="w-8 h-8 rounded-full bg-[var(--color-accent-muted)] flex items-center justify-center shrink-0">
-        <span className="text-sm font-medium text-[var(--color-accent)]">{index + 1}</span>
+      <div className={`w-8 h-8 rounded-full border ${actionStyle.accent} bg-white/5 flex items-center justify-center shrink-0`}>
+        <span className="text-sm font-medium text-white">{index + 1}</span>
       </div>
 
       {/* Content */}
@@ -391,6 +496,15 @@ function ActionConfigModal({
 }) {
   const [actionType, setActionType] = useState<ActionType>('send_sms')
   const [config, setConfig] = useState<ActionConfig>({})
+  const sampleData = {
+    name: 'Erfan Ranjibar',
+    first_name: 'Erfan',
+    business_name: 'CRMroo Cleaning Co.',
+    booking_date: 'Tue, 12 Mar',
+    booking_time: '9:00 AM',
+    quote_total: '$320',
+    payment_link: 'https://pay.crmroo.test/abcd',
+  }
 
   useEffect(() => {
     if (step) {
@@ -408,6 +522,17 @@ function ActionConfigModal({
     } else if (actionType === 'send_email') {
       setConfig((prev) => ({ ...prev, body: (prev.body || '') + placeholder }))
     }
+  }
+
+  const renderPreviewText = (text: string) => {
+    return text
+      .replace(/{{\s*name\s*}}/gi, sampleData.name)
+      .replace(/{{\s*first_name\s*}}/gi, sampleData.first_name)
+      .replace(/{{\s*business_name\s*}}/gi, sampleData.business_name)
+      .replace(/{{\s*booking_date\s*}}/gi, sampleData.booking_date)
+      .replace(/{{\s*booking_time\s*}}/gi, sampleData.booking_time)
+      .replace(/{{\s*quote_total\s*}}/gi, sampleData.quote_total)
+      .replace(/{{\s*payment_link\s*}}/gi, sampleData.payment_link)
   }
 
   const handleSave = () => {
@@ -456,66 +581,94 @@ function ActionConfigModal({
         {/* Action-specific config */}
         <div className="pt-4 border-t border-white/10">
           {actionType === 'send_sms' && (
-            <div className="space-y-3">
-              <div>
-                <label className="text-micro block mb-1.5">MESSAGE</label>
-                <textarea
-                  className="input w-full"
-                  rows={4}
-                  value={config.message || ''}
-                  onChange={(e) => setConfig({ ...config, message: e.target.value })}
-                  placeholder="Hi {{name}}, thanks for reaching out..."
-                />
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="space-y-3">
+                <div>
+                  <label className="text-micro block mb-1.5">MESSAGE</label>
+                  <textarea
+                    className="input w-full"
+                    rows={6}
+                    value={config.message || ''}
+                    onChange={(e) => setConfig({ ...config, message: e.target.value })}
+                    placeholder="Hi {{name}}, thanks for reaching out..."
+                  />
+                </div>
+                <div>
+                  <label className="text-micro block mb-1.5">INSERT PLACEHOLDER</label>
+                  <div className="flex flex-wrap gap-2">
+                    {PLACEHOLDERS.map((p) => (
+                      <button
+                        key={p.key}
+                        type="button"
+                        onClick={() => insertPlaceholder(p.key)}
+                        className="px-2 py-1 rounded bg-white/10 text-xs text-[var(--color-accent)] hover:bg-white/20"
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className="text-micro block mb-1.5">INSERT PLACEHOLDER</label>
-                <div className="flex flex-wrap gap-2">
-                  {PLACEHOLDERS.map((p) => (
-                    <button
-                      key={p.key}
-                      type="button"
-                      onClick={() => insertPlaceholder(p.key)}
-                      className="px-2 py-1 rounded bg-white/10 text-xs text-[var(--color-accent)] hover:bg-white/20"
-                    >
-                      {p.label}
-                    </button>
-                  ))}
+              <div className="space-y-2">
+                <label className="text-micro block mb-1.5">SMS PREVIEW</label>
+                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                  <div className="text-[10px] text-[var(--color-text-muted)] mb-2">To: {sampleData.name}</div>
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl px-3 py-2 text-sm text-white whitespace-pre-line">
+                    {renderPreviewText(config.message || 'Hi {{name}}, thanks for reaching out...')}
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
           {actionType === 'send_email' && (
-            <div className="space-y-3">
-              <Input
-                label="SUBJECT"
-                value={config.subject || ''}
-                onChange={(e) => setConfig({ ...config, subject: e.target.value })}
-                placeholder="Your quote from {{business_name}}"
-              />
-              <div>
-                <label className="text-micro block mb-1.5">BODY</label>
-                <textarea
-                  className="input w-full"
-                  rows={6}
-                  value={config.body || ''}
-                  onChange={(e) => setConfig({ ...config, body: e.target.value })}
-                  placeholder="Hi {{name}},&#10;&#10;Thanks for your interest..."
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="space-y-3">
+                <Input
+                  label="SUBJECT"
+                  value={config.subject || ''}
+                  onChange={(e) => setConfig({ ...config, subject: e.target.value })}
+                  placeholder="Your quote from {{business_name}}"
                 />
+                <div>
+                  <label className="text-micro block mb-1.5">BODY</label>
+                  <textarea
+                    className="input w-full"
+                    rows={8}
+                    value={config.body || ''}
+                    onChange={(e) => setConfig({ ...config, body: e.target.value })}
+                    placeholder="Hi {{name}},&#10;&#10;Thanks for your interest..."
+                  />
+                </div>
+                <div>
+                  <label className="text-micro block mb-1.5">INSERT PLACEHOLDER</label>
+                  <div className="flex flex-wrap gap-2">
+                    {PLACEHOLDERS.map((p) => (
+                      <button
+                        key={p.key}
+                        type="button"
+                        onClick={() => insertPlaceholder(p.key)}
+                        className="px-2 py-1 rounded bg-white/10 text-xs text-[var(--color-accent)] hover:bg-white/20"
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className="text-micro block mb-1.5">INSERT PLACEHOLDER</label>
-                <div className="flex flex-wrap gap-2">
-                  {PLACEHOLDERS.map((p) => (
-                    <button
-                      key={p.key}
-                      type="button"
-                      onClick={() => insertPlaceholder(p.key)}
-                      className="px-2 py-1 rounded bg-white/10 text-xs text-[var(--color-accent)] hover:bg-white/20"
-                    >
-                      {p.label}
-                    </button>
-                  ))}
+              <div className="space-y-2">
+                <label className="text-micro block mb-1.5">EMAIL PREVIEW</label>
+                <div className="rounded-lg border border-white/10 bg-white/5 overflow-hidden">
+                  <div className="px-3 py-2 border-b border-white/10">
+                    <p className="text-xs text-[var(--color-text-muted)]">From: {sampleData.business_name}</p>
+                    <p className="text-xs text-[var(--color-text-muted)]">To: {sampleData.name}</p>
+                    <p className="text-sm text-white mt-1">
+                      {renderPreviewText(config.subject || 'Your quote from {{business_name}}')}
+                    </p>
+                  </div>
+                  <div className="p-3 text-sm text-white whitespace-pre-line">
+                    {renderPreviewText(config.body || 'Hi {{name}},\n\nThanks for your interest...')}
+                  </div>
                 </div>
               </div>
             </div>
@@ -613,14 +766,37 @@ function WorkflowPreview({
     }
 
     if (trigger_type === 'time_based') {
-      const days = Math.abs(trigger_config.offset_days || 0)
-      const direction = (trigger_config.offset_days || 0) < 0 ? 'before' : 'after'
-      return `${days} day${days !== 1 ? 's' : ''} ${direction} booking`
+      const rawValue =
+        typeof trigger_config.offset_value === 'number'
+          ? trigger_config.offset_value
+          : trigger_config.offset_days || 0
+      const unit = trigger_config.offset_unit || 'days'
+      const absValue = Math.abs(rawValue)
+      const direction = rawValue < 0 ? 'before' : 'after'
+      const relativeTo = trigger_config.relative_to || 'start_at'
+      const relativeLabel =
+        relativeTo === 'end_at'
+          ? 'booking end'
+          : relativeTo === 'created_at'
+          ? 'booking created'
+          : 'booking start'
+      return `${absValue} ${unit} ${direction} ${relativeLabel}`
     }
 
     if (trigger_type === 'event_based') {
       const event = EVENTS.find((e) => e.value === trigger_config.event)
       return event ? `When ${event.label.toLowerCase()}` : 'When an event occurs'
+    }
+
+    if (trigger_type === 'manual') {
+      const entity = trigger_config.entity_type || 'lead'
+      return `Manual run from ${entity}`
+    }
+
+    if (trigger_type === 'scheduled') {
+      const time = trigger_config.time || '18:00'
+      const tz = trigger_config.timezone || 'local time'
+      return `Daily at ${time} (${tz})`
     }
 
     return 'Unknown trigger'
@@ -688,6 +864,10 @@ export default function WorkflowBuilderPage() {
   const [showTriggerModal, setShowTriggerModal] = useState(false)
   const [editingStep, setEditingStep] = useState<WorkflowStep | null>(null)
   const [showActionModal, setShowActionModal] = useState(false)
+  const [testLeadEmail, setTestLeadEmail] = useState('erfanau93@gmail.com')
+  const [testLeadPhone, setTestLeadPhone] = useState('+61405092779')
+  const [testing, setTesting] = useState(false)
+  const [testNotice, setTestNotice] = useState<string | null>(null)
 
   const orgId = currentOrg?.id
   const canManage = hasRole('admin')
@@ -746,6 +926,11 @@ export default function WorkflowBuilderPage() {
 
     if (workflow.trigger_type === 'event_based' && !workflow.trigger_config.event) {
       setError('Please select an event for the trigger')
+      return
+    }
+
+    if (workflow.trigger_type === 'scheduled' && !workflow.trigger_config.time) {
+      setError('Please set a time for the scheduled trigger')
       return
     }
 
@@ -812,7 +997,7 @@ export default function WorkflowBuilderPage() {
         if (stepsError) throw stepsError
       }
 
-      navigate('/settings/workflows')
+      navigate('/app/automations')
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to save workflow'
       setError(message)
@@ -820,6 +1005,112 @@ export default function WorkflowBuilderPage() {
       setSaving(false)
     }
   }, [orgId, workflow, steps, isNew, navigate])
+
+  const calculateFirstExecuteAt = useCallback(() => {
+    if (steps.length === 0) return new Date()
+    const firstStep = steps[0]
+    if (firstStep.action_type !== 'wait') return new Date()
+    const delayValue = firstStep.action_config.delay_value || 0
+    const delayUnit = firstStep.action_config.delay_unit || 'days'
+    const delayMs =
+      delayUnit === 'minutes'
+        ? delayValue * 60 * 1000
+        : delayUnit === 'hours'
+        ? delayValue * 60 * 60 * 1000
+        : delayValue * 24 * 60 * 60 * 1000
+    return new Date(Date.now() + delayMs)
+  }, [steps])
+
+  const runTestWorkflow = useCallback(async () => {
+    if (!orgId) return
+    setTestNotice(null)
+
+    if (!workflow.id) {
+      setTestNotice('Save the workflow before running a test.')
+      return
+    }
+
+    const email = testLeadEmail.trim()
+    const phone = testLeadPhone.trim()
+
+    if (!email && !phone) {
+      setTestNotice('Provide an email or phone number for the test lead.')
+      return
+    }
+
+    setTesting(true)
+    try {
+      let leadId: string | null = null
+      if (email) {
+        const { data, error } = await supabase
+          .from('extracted_leads')
+          .select('id')
+          .eq('org_id', orgId)
+          .eq('email', email)
+          .order('created_at', { ascending: false })
+          .limit(1)
+        if (error) throw error
+        leadId = data?.[0]?.id || null
+      }
+      if (!leadId && phone) {
+        const { data, error } = await supabase
+          .from('extracted_leads')
+          .select('id')
+          .eq('org_id', orgId)
+          .eq('phone_number', phone)
+          .order('created_at', { ascending: false })
+          .limit(1)
+        if (error) throw error
+        leadId = data?.[0]?.id || null
+      }
+
+      if (!leadId) {
+        setTestNotice('Test lead not found. Create the lead first.')
+        return
+      }
+
+      const { data: existing } = await supabase
+        .from('workflow_runs')
+        .select('id')
+        .eq('workflow_id', workflow.id)
+        .eq('entity_id', leadId)
+        .in('status', ['active', 'paused'])
+        .maybeSingle()
+
+      if (existing) {
+        setTestNotice('A test run is already active for this lead.')
+        return
+      }
+
+      const nextExecuteAt = calculateFirstExecuteAt()
+
+      const { error: insertError } = await supabase
+        .from('workflow_runs')
+        .insert({
+          org_id: orgId,
+          workflow_id: workflow.id,
+          entity_type: 'lead',
+          entity_id: leadId,
+          status: 'active',
+          current_step: 1,
+          next_execute_at: nextExecuteAt.toISOString(),
+          metadata: {
+            trigger_event: 'manual_test',
+            test_email: email || null,
+            test_phone: phone || null,
+          },
+        })
+
+      if (insertError) throw insertError
+
+      setTestNotice('Test run queued. Workflow runner will execute shortly.')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to start test run'
+      setTestNotice(message)
+    } finally {
+      setTesting(false)
+    }
+  }, [calculateFirstExecuteAt, orgId, testLeadEmail, testLeadPhone, workflow.id])
 
   // Step management
   const addStep = useCallback((newStep: WorkflowStep) => {
@@ -892,7 +1183,7 @@ export default function WorkflowBuilderPage() {
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"
-            onClick={() => navigate('/settings/workflows')}
+            onClick={() => navigate('/app/automations')}
             className="!px-2"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -996,7 +1287,8 @@ export default function WorkflowBuilderPage() {
                 </Button>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="relative pl-4 space-y-2">
+                <div className="absolute left-3 top-0 bottom-0 w-px bg-white/10" />
                 {steps.map((step, index) => (
                   <ActionStepCard
                     key={step.step_order}
@@ -1032,6 +1324,43 @@ export default function WorkflowBuilderPage() {
       {/* Preview */}
       <WorkflowPreview workflow={workflow} steps={steps} />
 
+      <GlassCard className="p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-heading text-white">Test Workflow</h2>
+            <p className="text-caption">Run this workflow against a real lead to verify delivery.</p>
+          </div>
+          <Badge variant="warning">Sends real messages</Badge>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-4">
+          <Input
+            label="TEST LEAD EMAIL"
+            value={testLeadEmail}
+            onChange={(e) => setTestLeadEmail(e.target.value)}
+            placeholder="lead@example.com"
+          />
+          <Input
+            label="TEST LEAD PHONE"
+            value={testLeadPhone}
+            onChange={(e) => setTestLeadPhone(e.target.value)}
+            placeholder="+61400111222"
+          />
+        </div>
+
+        {testNotice && (
+          <div className="p-3 rounded-lg bg-white/5 border border-white/10">
+            <p className="text-sm text-[var(--color-text-secondary)]">{testNotice}</p>
+          </div>
+        )}
+
+        <div className="flex items-center justify-end gap-3">
+          <Button variant="primary" onClick={runTestWorkflow} loading={testing}>
+            Run test now
+          </Button>
+        </div>
+      </GlassCard>
+
       {/* Trigger Selection Modal */}
       <Modal
         open={showTriggerModal}
@@ -1045,10 +1374,16 @@ export default function WorkflowBuilderPage() {
               key={trigger.type}
               type="button"
               onClick={() => {
+                const defaultConfig: TriggerConfig =
+                  trigger.type === 'manual'
+                    ? { entity_type: 'lead' }
+                    : trigger.type === 'scheduled'
+                    ? { time: '18:00', timezone: currentOrg?.timezone || 'Australia/Sydney' }
+                    : {}
                 setWorkflow({
                   ...workflow,
                   trigger_type: trigger.type,
-                  trigger_config: {},
+                  trigger_config: defaultConfig,
                 })
                 setShowTriggerModal(false)
               }}
@@ -1083,3 +1418,7 @@ export default function WorkflowBuilderPage() {
     </div>
   )
 }
+
+
+
+

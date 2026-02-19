@@ -3,6 +3,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../lib/auth'
 import { supabase } from '../../lib/supabase'
 import { GlassCard, Button, Input, Badge, Modal, Switch } from '../../components/ui'
@@ -86,6 +87,7 @@ function formatTimestamp(value?: string | null) {
 
 export default function AutomationSettingsPage() {
   const { currentOrg, hasRole } = useAuth()
+  const navigate = useNavigate()
   const [settings, setSettings] = useState<Record<AutomationType, AutomationSetting>>(DEFAULT_SETTINGS)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -105,6 +107,12 @@ export default function AutomationSettingsPage() {
   const [reminderBody, setReminderBody] = useState('')
   const [dailyRecipient, setDailyRecipient] = useState('')
   const [dailyTimezone, setDailyTimezone] = useState('Australia/Sydney')
+  const [testLeadName, setTestLeadName] = useState('Erfan Ranjibar')
+  const [testLeadEmail, setTestLeadEmail] = useState('erfanau93@gmail.com')
+  const [testLeadPhone, setTestLeadPhone] = useState('+61405092779')
+  const [testLeadId, setTestLeadId] = useState<string | null>(null)
+  const [testLeadLoading, setTestLeadLoading] = useState(false)
+  const [testLeadNotice, setTestLeadNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
 
   const [lastTriggered, setLastTriggered] = useState<Record<AutomationType, string | null>>({
     marketing_sms: null,
@@ -410,6 +418,131 @@ export default function AutomationSettingsPage() {
     setSaving(false)
   }, [templateEditor])
 
+  const ensureTestLead = useCallback(async () => {
+    if (!orgId) return null
+    setTestLeadNotice(null)
+
+    const searchEmail = testLeadEmail.trim()
+    const searchPhone = testLeadPhone.trim()
+
+    if (!searchEmail && !searchPhone) {
+      setTestLeadNotice({ type: 'error', message: 'Provide at least an email or phone number.' })
+      return null
+    }
+
+    let existingLead: { id: string } | null = null
+
+    if (searchEmail) {
+      const { data: byEmail, error: emailError } = await supabase
+        .from('extracted_leads')
+        .select('id')
+        .eq('org_id', orgId)
+        .eq('email', searchEmail)
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+      if (emailError) {
+        setTestLeadNotice({ type: 'error', message: emailError.message })
+        return null
+      }
+      existingLead = byEmail?.[0] || null
+    }
+
+    if (!existingLead && searchPhone) {
+      const { data: byPhone, error: phoneError } = await supabase
+        .from('extracted_leads')
+        .select('id')
+        .eq('org_id', orgId)
+        .eq('phone_number', searchPhone)
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+      if (phoneError) {
+        setTestLeadNotice({ type: 'error', message: phoneError.message })
+        return null
+      }
+      existingLead = byPhone?.[0] || null
+    }
+    if (existingLead?.id) {
+      const { error: updateError } = await supabase
+        .from('extracted_leads')
+        .update({
+          name: testLeadName.trim(),
+          email: searchEmail || null,
+          phone_number: searchPhone || null,
+        })
+        .eq('id', existingLead.id)
+        .eq('org_id', orgId)
+
+      if (updateError) {
+        setTestLeadNotice({ type: 'error', message: updateError.message })
+        return null
+      }
+
+      setTestLeadId(existingLead.id)
+      setTestLeadNotice({ type: 'success', message: 'Test lead updated.' })
+      return existingLead.id
+    }
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('extracted_leads')
+      .insert({
+        org_id: orgId,
+        name: testLeadName.trim(),
+        email: searchEmail || null,
+        phone_number: searchPhone || null,
+        status: 'Unanswered',
+        region_notes: 'Automation test lead',
+      })
+      .select('id')
+      .single()
+
+    if (insertError) {
+      setTestLeadNotice({ type: 'error', message: insertError.message })
+      return null
+    }
+
+    setTestLeadId(inserted?.id || null)
+    setTestLeadNotice({ type: 'success', message: 'Test lead created.' })
+    return inserted?.id || null
+  }, [orgId, testLeadEmail, testLeadName, testLeadPhone])
+
+  const updateTestLeadStatus = useCallback(
+    async (status: string) => {
+      if (!orgId) return
+      setTestLeadLoading(true)
+      setTestLeadNotice(null)
+      try {
+        const leadId = testLeadId || (await ensureTestLead())
+        if (!leadId) return
+
+        const { error: updateError } = await supabase
+          .from('extracted_leads')
+          .update({ status })
+          .eq('id', leadId)
+          .eq('org_id', orgId)
+
+        if (updateError) {
+          setTestLeadNotice({ type: 'error', message: updateError.message })
+        } else {
+          setTestLeadNotice({ type: 'success', message: `Lead status updated to "${status}".` })
+        }
+      } finally {
+        setTestLeadLoading(false)
+      }
+    },
+    [ensureTestLead, orgId, testLeadId]
+  )
+
+  const handleCreateTestLead = useCallback(async () => {
+    setTestLeadLoading(true)
+    try {
+      await ensureTestLead()
+    } finally {
+      setTestLeadLoading(false)
+    }
+  }, [ensureTestLead])
+
   if (!canManage) {
     return (
       <div className="p-8 text-center">
@@ -445,7 +578,8 @@ export default function AutomationSettingsPage() {
         </GlassCard>
       ) : (
         <>
-          <GlassCard className="p-6 space-y-5">
+          <div id="automation-marketing-loop">
+            <GlassCard className="p-6 space-y-5">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-heading text-white">Marketing Loop</h2>
@@ -530,9 +664,11 @@ export default function AutomationSettingsPage() {
               <Badge variant="info">{PLACEHOLDER_BADGES.name}</Badge>
               <Badge variant="info">{PLACEHOLDER_BADGES.company}</Badge>
             </div>
-          </GlassCard>
+            </GlassCard>
+          </div>
 
-          <GlassCard className="p-6 space-y-4">
+          <div id="automation-quote-email">
+            <GlassCard className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-heading text-white">Quote Email</h2>
@@ -548,9 +684,11 @@ export default function AutomationSettingsPage() {
               />
             </div>
             <p className="text-xs text-[var(--color-text-muted)]">Uses your Resend integration settings.</p>
-          </GlassCard>
+            </GlassCard>
+          </div>
 
-          <GlassCard className="p-6 space-y-4">
+          <div id="automation-booking-emails">
+            <GlassCard className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-heading text-white">Booking Emails</h2>
@@ -628,9 +766,11 @@ export default function AutomationSettingsPage() {
             <div className="flex flex-wrap gap-2">
               <Badge variant="info">{PLACEHOLDER_BADGES.name}</Badge>
             </div>
-          </GlassCard>
+            </GlassCard>
+          </div>
 
-          <GlassCard className="p-6 space-y-4">
+          <div id="automation-payment-sms">
+            <GlassCard className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-heading text-white">Payment Reminders (SMS)</h2>
@@ -676,9 +816,11 @@ export default function AutomationSettingsPage() {
               <Badge variant="info">{PLACEHOLDER_BADGES.amount}</Badge>
               <Badge variant="info">{PLACEHOLDER_BADGES.paymentLink}</Badge>
             </div>
-          </GlassCard>
+            </GlassCard>
+          </div>
 
-          <GlassCard className="p-6 space-y-4">
+          <div id="automation-review-sms">
+            <GlassCard className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-heading text-white">Review Requests (SMS)</h2>
@@ -723,9 +865,11 @@ export default function AutomationSettingsPage() {
               <Badge variant="info">{PLACEHOLDER_BADGES.name}</Badge>
               <Badge variant="info">{PLACEHOLDER_BADGES.reviewLink}</Badge>
             </div>
-          </GlassCard>
+            </GlassCard>
+          </div>
 
-          <GlassCard className="p-6 space-y-4">
+          <div id="automation-daily-summary">
+            <GlassCard className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-heading text-white">Daily Summary Email</h2>
@@ -773,7 +917,80 @@ export default function AutomationSettingsPage() {
                 Save daily summary
               </Button>
             </div>
-          </GlassCard>
+            </GlassCard>
+          </div>
+
+          <div id="automation-test-lead">
+            <GlassCard className="p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-heading text-white">Automation Test Lead</h2>
+                  <p className="text-caption">Create a test lead and move them through statuses to trigger automations.</p>
+                </div>
+                {testLeadId && (
+                  <Badge variant="info">Lead ready</Badge>
+                )}
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-4">
+                <Input
+                  label="NAME"
+                  value={testLeadName}
+                  onChange={(e) => setTestLeadName(e.target.value)}
+                />
+                <Input
+                  label="EMAIL"
+                  value={testLeadEmail}
+                  onChange={(e) => setTestLeadEmail(e.target.value)}
+                />
+                <Input
+                  label="PHONE"
+                  value={testLeadPhone}
+                  onChange={(e) => setTestLeadPhone(e.target.value)}
+                />
+              </div>
+
+              {testLeadNotice && (
+                <div
+                  className={`p-3 rounded-lg border ${
+                    testLeadNotice.type === 'error'
+                      ? 'bg-[var(--color-error-muted)] border-red-500/20'
+                      : 'bg-emerald-500/10 border-emerald-500/20'
+                  }`}
+                >
+                  <p className={`text-sm ${testLeadNotice.type === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
+                    {testLeadNotice.message}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" onClick={handleCreateTestLead} loading={testLeadLoading}>
+                  Create or update lead
+                </Button>
+                <Button variant="ghost" onClick={() => updateTestLeadStatus('Marketing Loop')} disabled={testLeadLoading}>
+                  Move to Marketing Loop
+                </Button>
+                <Button variant="ghost" onClick={() => updateTestLeadStatus('Quote Sent')} disabled={testLeadLoading}>
+                  Move to Quote Sent
+                </Button>
+                <Button variant="ghost" onClick={() => updateTestLeadStatus('Unanswered')} disabled={testLeadLoading}>
+                  Reset to Unanswered
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => testLeadId && navigate(`/app/leads/${testLeadId}`)}
+                  disabled={!testLeadId}
+                >
+                  Open lead
+                </Button>
+              </div>
+
+              <p className="text-xs text-[var(--color-text-muted)]">
+                Running these actions may send real SMS or emails if automations are enabled.
+              </p>
+            </GlassCard>
+          </div>
 
           <div className="flex items-center justify-end gap-3">
             <Badge variant={saving ? 'warning' : 'success'}>{saving ? 'Saving...' : 'All changes saved'}</Badge>

@@ -250,6 +250,17 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Occurrence not found' }, 404)
   }
 
+  if ((occurrence as any).org_id) {
+    const { data: orgRow } = await supabase
+      .from('organizations')
+      .select('use_workflow_automations')
+      .eq('id', (occurrence as any).org_id)
+      .maybeSingle()
+    if (orgRow?.use_workflow_automations) {
+      return jsonResponse({ skipped: true, reason: 'workflow_automations_enabled' })
+    }
+  }
+
   let completionConfig: Record<string, unknown> = {}
   if (!payload.testOnly && (occurrence as any).org_id) {
     const { data: setting } = await supabase

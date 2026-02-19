@@ -126,7 +126,7 @@ export default function GlobalSearch() {
             description: [lead.status, lead.email || lead.phone_number]
               .filter(Boolean)
               .join(' • '),
-            href: `/?lead=${lead.id}`,
+            href: `/app/leads/${lead.id}`,
           }))
         )
       }
@@ -144,7 +144,7 @@ export default function GlobalSearch() {
             ]
               .filter(Boolean)
               .join(' • '),
-            href: `/calendar?occurrence=${occ.id}`,
+            href: `/app/calendar?occurrence=${occ.id}`,
           }))
         )
       }
@@ -158,7 +158,7 @@ export default function GlobalSearch() {
             description: [c.base_location_text, c.phone || c.email]
               .filter(Boolean)
               .join(' • '),
-            href: `/cleaners?cleaner=${c.id}`,
+            href: `/app/cleaners?cleaner=${c.id}`,
           }))
         )
       }

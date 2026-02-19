@@ -141,6 +141,25 @@ async function loadAutomationFlags(
   return enabledByOrg
 }
 
+async function loadWorkflowFlags(
+  supabase: ReturnType<typeof createClient>,
+  orgIds: string[]
+): Promise<Map<string, boolean>> {
+  const byOrg = new Map<string, boolean>()
+  if (orgIds.length === 0) return byOrg
+
+  const { data } = await supabase
+    .from('organizations')
+    .select('id, use_workflow_automations')
+    .in('id', orgIds)
+
+  ;(data || []).forEach((row: any) => {
+    byOrg.set(row.id, Boolean(row.use_workflow_automations))
+  })
+
+  return byOrg
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', {
@@ -181,6 +200,7 @@ Deno.serve(async (req) => {
     if (smsJourneys && smsJourneys.length > 0) {
       const smsOrgIds = Array.from(new Set(smsJourneys.map((j) => j.org_id).filter(Boolean)))
       const smsEnabledByOrg = await loadAutomationFlags(supabase, 'marketing_sms', smsOrgIds as string[])
+      const smsWorkflowByOrg = await loadWorkflowFlags(supabase, smsOrgIds as string[])
       // Lock journeys
       const journeyIds = smsJourneys.map((j) => j.id)
       await supabase
@@ -189,6 +209,20 @@ Deno.serve(async (req) => {
         .in('id', journeyIds)
 
       for (const journey of smsJourneys) {
+        const workflowEnabled = journey.org_id ? (smsWorkflowByOrg.get(journey.org_id) ?? false) : false
+        if (workflowEnabled) {
+          await supabase
+            .from('marketing_sms_journeys')
+            .update({
+              status: 'paused',
+              last_error: 'workflow_automations_enabled',
+              locked_at: null,
+              locked_by: null,
+              updated_at: nowIso,
+            })
+            .eq('id', journey.id)
+          continue
+        }
         const smsEnabled = journey.org_id ? (smsEnabledByOrg.get(journey.org_id) ?? true) : true
         if (!smsEnabled) {
           await supabase
@@ -334,6 +368,7 @@ Deno.serve(async (req) => {
     if (emailJourneys && emailJourneys.length > 0) {
       const emailOrgIds = Array.from(new Set(emailJourneys.map((j) => j.org_id).filter(Boolean)))
       const emailEnabledByOrg = await loadAutomationFlags(supabase, 'marketing_email', emailOrgIds as string[])
+      const emailWorkflowByOrg = await loadWorkflowFlags(supabase, emailOrgIds as string[])
       // Lock journeys
       const journeyIds = emailJourneys.map((j) => j.id)
       await supabase
@@ -342,6 +377,20 @@ Deno.serve(async (req) => {
         .in('id', journeyIds)
 
       for (const journey of emailJourneys) {
+        const workflowEnabled = journey.org_id ? (emailWorkflowByOrg.get(journey.org_id) ?? false) : false
+        if (workflowEnabled) {
+          await supabase
+            .from('marketing_email_journeys')
+            .update({
+              status: 'paused',
+              last_error: 'workflow_automations_enabled',
+              locked_at: null,
+              locked_by: null,
+              updated_at: nowIso,
+            })
+            .eq('id', journey.id)
+          continue
+        }
         const emailEnabled = journey.org_id ? (emailEnabledByOrg.get(journey.org_id) ?? true) : true
         if (!emailEnabled) {
           await supabase

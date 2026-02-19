@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
-import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase'
+﻿import { useEffect, useMemo, useState } from 'react'
+import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
+import { Badge } from './ui'
 
 type Lead = {
   id: string
@@ -10,53 +11,37 @@ type Lead = {
   status?: string | null
 }
 
-type SMSJourney = {
+type WorkflowMeta = {
   id: string
-  lead_id: string
+  name: string
+  system_key: string | null
+}
+
+type WorkflowRun = {
+  id: string
+  workflow_id: string
+  entity_id: string
   status: string
   current_step: number
-  next_send_at?: string | null
-  started_at: string
+  next_execute_at?: string | null
+  started_at?: string | null
   completed_at?: string | null
   cancelled_at?: string | null
   last_error?: string | null
 }
 
-type EmailJourney = {
-  id: string
-  lead_id: string
-  status: string
-  current_step: number
-  next_send_at?: string | null
-  started_at: string
+type StepLog = {
+  run_id: string
+  step_order: number
   completed_at?: string | null
-  cancelled_at?: string | null
-  last_error?: string | null
+  status?: string | null
 }
 
-type SMSLog = {
-  step: number
-  sent_at?: string | null
-}
-
-type EmailLog = {
-  step: number
-  sent_at?: string | null
-}
-
-type LeadWithJourneys = Lead & {
-  sms_journey?: SMSJourney | null
-  email_journey?: EmailJourney | null
-  last_sms?: SMSLog | null
-  last_email?: EmailLog | null
-}
-
-function getStatusLight(journey: SMSJourney | EmailJourney | null | undefined): 'green' | 'orange' | 'red' {
-  if (!journey) return 'red'
-  if (journey.status === 'completed' || journey.status === 'cancelled') return 'red'
-  if (journey.status === 'paused') return 'red'
-  if (journey.current_step >= 6) return 'orange'
-  return 'green'
+type LeadWithRuns = Lead & {
+  sms_run?: WorkflowRun | null
+  email_run?: WorkflowRun | null
+  last_sms?: StepLog | null
+  last_email?: StepLog | null
 }
 
 function formatDate(dateStr: string | null | undefined): string {
@@ -68,12 +53,28 @@ function formatDate(dateStr: string | null | undefined): string {
   }
 }
 
+function getStatusLight(run: WorkflowRun | null | undefined, totalSteps: number): 'green' | 'orange' | 'red' {
+  if (!run) return 'red'
+  if (run.status === 'completed' || run.status === 'cancelled' || run.status === 'failed') return 'red'
+  if (run.status === 'paused') return 'red'
+  if (totalSteps > 0 && run.current_step >= totalSteps - 1) return 'orange'
+  return 'green'
+}
+
+function pickPrimaryRun(runs: WorkflowRun[]): WorkflowRun | null {
+  if (runs.length === 0) return null
+  const active = runs.find((run) => run.status === 'active' || run.status === 'paused')
+  if (active) return active
+  return runs[0]
+}
+
 export default function MarketingLoop() {
   const { currentOrg } = useAuth()
-  const [leads, setLeads] = useState<LeadWithJourneys[]>([])
+  const [leads, setLeads] = useState<LeadWithRuns[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [actionLoading, setActionLoading] = useState<Set<string>>(new Set())
+  const [workflowMeta, setWorkflowMeta] = useState<{ sms?: WorkflowMeta | null; email?: WorkflowMeta | null }>({})
+  const [stepCounts, setStepCounts] = useState<Record<string, number>>({})
 
   const fetchLeads = async () => {
     try {
@@ -86,7 +87,6 @@ export default function MarketingLoop() {
         return
       }
 
-      // Get all leads with Marketing Loop status
       const { data: leadsData, error: leadsError } = await supabase
         .from('extracted_leads')
         .select('id, name, email, phone_number, status')
@@ -102,66 +102,95 @@ export default function MarketingLoop() {
         return
       }
 
-      const leadIds = leadsData.map((l) => l.id)
+      const leadIds = leadsData.map((lead) => lead.id)
 
-      // Get SMS journeys
-      const { data: smsJourneys } = await supabase
-        .from('marketing_sms_journeys')
-        .select('*')
+      const { data: workflows } = await supabase
+        .from('workflows')
+        .select('id, name, system_key')
         .eq('org_id', currentOrg.id)
-        .in('lead_id', leadIds)
+        .in('system_key', ['marketing_sms', 'marketing_email'])
 
-      // Get Email journeys
-      const { data: emailJourneys } = await supabase
-        .from('marketing_email_journeys')
-        .select('*')
+      const smsWorkflow = workflows?.find((w: any) => w.system_key === 'marketing_sms') || null
+      const emailWorkflow = workflows?.find((w: any) => w.system_key === 'marketing_email') || null
+
+      setWorkflowMeta({ sms: smsWorkflow, email: emailWorkflow })
+
+      const workflowIds = [smsWorkflow?.id, emailWorkflow?.id].filter(Boolean) as string[]
+      if (workflowIds.length === 0) {
+        setLeads(leadsData as any)
+        setIsLoading(false)
+        return
+      }
+
+      const { data: runs } = await supabase
+        .from('workflow_runs')
+        .select('id, workflow_id, entity_id, status, current_step, next_execute_at, started_at, completed_at, cancelled_at, last_error')
         .eq('org_id', currentOrg.id)
-        .in('lead_id', leadIds)
+        .eq('entity_type', 'lead')
+        .in('workflow_id', workflowIds)
+        .in('entity_id', leadIds)
+        .order('started_at', { ascending: false })
 
-      // Get last SMS send per lead
-      const { data: smsLogs } = await supabase
-        .from('marketing_sms_logs')
-        .select('lead_id, step, sent_at')
-        .eq('org_id', currentOrg.id)
-        .in('lead_id', leadIds)
-        .eq('status', 'sent')
-        .order('sent_at', { ascending: false })
+      const runIds = (runs || []).map((run: any) => run.id)
 
-      // Get last email send per lead
-      const { data: emailLogs } = await supabase
-        .from('marketing_email_logs')
-        .select('lead_id, step, sent_at')
-        .eq('org_id', currentOrg.id)
-        .in('lead_id', leadIds)
-        .eq('status', 'sent')
-        .order('sent_at', { ascending: false })
+      const [logsRes, stepRes] = await Promise.all([
+        runIds.length
+          ? supabase
+              .from('workflow_step_logs')
+              .select('run_id, step_order, completed_at, status')
+              .in('run_id', runIds)
+              .eq('status', 'success')
+              .order('completed_at', { ascending: false })
+          : Promise.resolve({ data: [] }),
+        workflowIds.length
+          ? supabase
+              .from('workflow_steps')
+              .select('workflow_id, id')
+              .in('workflow_id', workflowIds)
+          : Promise.resolve({ data: [] }),
+      ])
 
-      // Combine data
-      const smsJourneysByLead = new Map((smsJourneys || []).map((j) => [j.lead_id, j]))
-      const emailJourneysByLead = new Map((emailJourneys || []).map((j) => [j.lead_id, j]))
+      const logs = (logsRes as any)?.data || []
+      const steps = (stepRes as any)?.data || []
 
-      const smsLogsByLead = new Map<string, SMSLog>()
-      const emailLogsByLead = new Map<string, EmailLog>()
+      const counts: Record<string, number> = {}
+      steps.forEach((step: any) => {
+        counts[step.workflow_id] = (counts[step.workflow_id] || 0) + 1
+      })
+      setStepCounts(counts)
 
-      smsLogs?.forEach((log) => {
-        if (!smsLogsByLead.has(log.lead_id)) {
-          smsLogsByLead.set(log.lead_id, { step: log.step, sent_at: log.sent_at })
+      const logsByRun = new Map<string, StepLog>()
+      logs.forEach((log: any) => {
+        if (!logsByRun.has(log.run_id)) {
+          logsByRun.set(log.run_id, log)
         }
       })
 
-      emailLogs?.forEach((log) => {
-        if (!emailLogsByLead.has(log.lead_id)) {
-          emailLogsByLead.set(log.lead_id, { step: log.step, sent_at: log.sent_at })
+      const runsByLead: Record<string, { sms: WorkflowRun[]; email: WorkflowRun[] }> = {}
+      ;(runs || []).forEach((run: any) => {
+        if (!runsByLead[run.entity_id]) {
+          runsByLead[run.entity_id] = { sms: [], email: [] }
+        }
+        if (run.workflow_id === smsWorkflow?.id) {
+          runsByLead[run.entity_id].sms.push(run)
+        }
+        if (run.workflow_id === emailWorkflow?.id) {
+          runsByLead[run.entity_id].email.push(run)
         }
       })
 
-      const combined: LeadWithJourneys[] = leadsData.map((lead) => ({
-        ...lead,
-        sms_journey: smsJourneysByLead.get(lead.id) || null,
-        email_journey: emailJourneysByLead.get(lead.id) || null,
-        last_sms: smsLogsByLead.get(lead.id) || null,
-        last_email: emailLogsByLead.get(lead.id) || null,
-      }))
+      const combined: LeadWithRuns[] = (leadsData as any).map((lead: any) => {
+        const leadRuns = runsByLead[lead.id] || { sms: [], email: [] }
+        const smsRun = pickPrimaryRun(leadRuns.sms)
+        const emailRun = pickPrimaryRun(leadRuns.email)
+        return {
+          ...lead,
+          sms_run: smsRun,
+          email_run: emailRun,
+          last_sms: smsRun ? logsByRun.get(smsRun.id) || null : null,
+          last_email: emailRun ? logsByRun.get(emailRun.id) || null : null,
+        }
+      })
 
       setLeads(combined)
     } catch (err) {
@@ -177,24 +206,11 @@ export default function MarketingLoop() {
 
     fetchLeads()
 
-    // Subscribe to changes
     const channel = supabase
       .channel('marketing_loop_changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id },
-        () => fetchLeads()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'marketing_sms_journeys', filter: 'org_id=eq.' + currentOrg.id },
-        () => fetchLeads()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'marketing_email_journeys', filter: 'org_id=eq.' + currentOrg.id },
-        () => fetchLeads()
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id }, () => fetchLeads())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'workflow_runs', filter: 'org_id=eq.' + currentOrg.id }, () => fetchLeads())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'workflow_step_logs', filter: 'org_id=eq.' + currentOrg.id }, () => fetchLeads())
       .subscribe()
 
     return () => {
@@ -202,83 +218,52 @@ export default function MarketingLoop() {
     }
   }, [currentOrg])
 
-  const handleAction = async (leadId: string, action: string, journeyType: 'sms' | 'email' | 'both' = 'both', step?: number) => {
-    setActionLoading((prev) => new Set(prev).add(`${leadId}-${action}`))
-
-    try {
-      const response = await fetch(`${supabaseUrl}/functions/v1/marketing-loop-actions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
-        },
-        body: JSON.stringify({
-          action,
-          leadId,
-          journeyType,
-          step,
-        }),
-      })
-
-      const result = await response.json()
-
-      if (!response.ok || result.error) {
-        throw new Error(result.error || 'Action failed')
-      }
-
-      // Refresh data
-      await fetchLeads()
-    } catch (err) {
-      console.error('Error performing action:', err)
-      setError(err instanceof Error ? err.message : 'Action failed')
-    } finally {
-      setActionLoading((prev) => {
-        const next = new Set(prev)
-        next.delete(`${leadId}-${action}`)
-        return next
-      })
+  const stats = useMemo(() => {
+    const activeCount = leads.filter((lead) => lead.sms_run?.status === 'active' || lead.email_run?.status === 'active').length
+    const completedCount = leads.filter(
+      (lead) => lead.sms_run?.status === 'completed' && lead.email_run?.status === 'completed'
+    ).length
+    return {
+      total: leads.length,
+      active: activeCount,
+      completed: completedCount,
     }
-  }
-
-  const handleSendNow = async (leadId: string, journeyType: 'sms' | 'email') => {
-    await handleAction(leadId, 'send_now', journeyType)
-  }
+  }, [leads])
 
   return (
     <div className="min-h-screen p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-white mb-2">Marketing Loop</h1>
-          <p className="text-sm text-white/60">Manage automated SMS and email journeys for leads in Marketing Loop</p>
+          <p className="text-sm text-white/60">Read-only view of Marketing Loop workflows running on leads.</p>
         </div>
 
         {error && (
           <div className="mb-4 p-3 rounded-lg bg-red-500/20 border border-red-500/30 text-red-200 text-sm">{error}</div>
         )}
 
-        {/* Stats */}
+        {!workflowMeta.sms && !workflowMeta.email && (
+          <div className="mb-6 p-4 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm">
+            No Marketing Loop workflows found. Run the migration script or create workflows with system keys
+            <span className="font-semibold"> marketing_sms</span> and <span className="font-semibold">marketing_email</span>.
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white/5 border border-white/10 rounded-lg p-4">
             <div className="text-sm text-white/60 mb-1">Total Leads</div>
-            <div className="text-2xl font-bold text-white">{leads.length}</div>
+            <div className="text-2xl font-bold text-white">{stats.total}</div>
           </div>
           <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-            <div className="text-sm text-white/60 mb-1">Active Journeys</div>
-            <div className="text-2xl font-bold text-white">
-              {leads.filter((l) => l.sms_journey?.status === 'active' || l.email_journey?.status === 'active').length}
-            </div>
+            <div className="text-sm text-white/60 mb-1">Active Runs</div>
+            <div className="text-2xl font-bold text-white">{stats.active}</div>
           </div>
           <div className="bg-white/5 border border-white/10 rounded-lg p-4">
             <div className="text-sm text-white/60 mb-1">Completed</div>
-            <div className="text-2xl font-bold text-white">
-              {leads.filter((l) => l.sms_journey?.status === 'completed' && l.email_journey?.status === 'completed').length}
-            </div>
+            <div className="text-2xl font-bold text-white">{stats.completed}</div>
           </div>
         </div>
 
-        {/* Leads List */}
         {isLoading ? (
           <div className="text-center py-12 text-white/60">Loading...</div>
         ) : leads.length === 0 ? (
@@ -286,164 +271,85 @@ export default function MarketingLoop() {
         ) : (
           <div className="space-y-4">
             {leads.map((lead) => {
-              const smsLight = getStatusLight(lead.sms_journey)
-              const emailLight = getStatusLight(lead.email_journey)
-              const smsLoading = actionLoading.has(`${lead.id}-pause`) || actionLoading.has(`${lead.id}-resume`) || actionLoading.has(`${lead.id}-cancel`)
-              const emailLoading = actionLoading.has(`${lead.id}-pause`) || actionLoading.has(`${lead.id}-resume`) || actionLoading.has(`${lead.id}-cancel`)
+              const smsSteps = stepCounts[workflowMeta.sms?.id || ''] || 0
+              const emailSteps = stepCounts[workflowMeta.email?.id || ''] || 0
+              const smsLight = getStatusLight(lead.sms_run, smsSteps)
+              const emailLight = getStatusLight(lead.email_run, emailSteps)
 
               return (
                 <div key={lead.id} className="bg-white/5 border border-white/10 rounded-lg p-4">
                   <div className="flex items-start justify-between gap-4 flex-wrap">
-                    {/* Lead Info */}
                     <div className="flex-1 min-w-[200px]">
                       <div className="flex items-center gap-2 mb-2">
                         <h3 className="text-lg font-semibold text-white">{lead.name || 'No name'}</h3>
                         <div className="flex items-center gap-1">
                           <span
-                            className={`w-2 h-2 rounded-full ${
-                              smsLight === 'green'
-                                ? 'bg-green-400'
-                                : smsLight === 'orange'
-                                ? 'bg-orange-400'
-                                : 'bg-red-400'
-                            }`}
+                            className={`w-2 h-2 rounded-full ${smsLight === 'green' ? 'bg-green-400' : smsLight === 'orange' ? 'bg-orange-400' : 'bg-red-400'}`}
                             title={`SMS: ${smsLight}`}
                           />
                           <span
-                            className={`w-2 h-2 rounded-full ${
-                              emailLight === 'green'
-                                ? 'bg-green-400'
-                                : emailLight === 'orange'
-                                ? 'bg-orange-400'
-                                : 'bg-red-400'
-                            }`}
+                            className={`w-2 h-2 rounded-full ${emailLight === 'green' ? 'bg-green-400' : emailLight === 'orange' ? 'bg-orange-400' : 'bg-red-400'}`}
                             title={`Email: ${emailLight}`}
                           />
                         </div>
                       </div>
                       <div className="text-sm text-white/60 space-y-1">
-                        {lead.phone_number && <div>📱 {lead.phone_number}</div>}
-                        {lead.email && <div>✉️ {lead.email}</div>}
+                        {lead.phone_number && <div>?? {lead.phone_number}</div>}
+                        {lead.email && <div>?? {lead.email}</div>}
                       </div>
                     </div>
 
-                    {/* SMS Journey Info */}
                     <div className="flex-1 min-w-[200px]">
-                      <div className="text-xs text-white/40 mb-1">SMS Journey</div>
-                      {lead.sms_journey ? (
+                      <div className="text-xs text-white/40 mb-1">SMS Workflow</div>
+                      {lead.sms_run ? (
                         <div className="space-y-1 text-sm">
                           <div className="text-white">
-                            Step {lead.sms_journey.current_step}/7 ·{' '}
-                            <span className={lead.sms_journey.status === 'active' ? 'text-green-400' : 'text-white/60'}>
-                              {lead.sms_journey.status}
+                            Step {lead.sms_run.current_step}/{smsSteps || '-'} ·{' '}
+                            <span className={lead.sms_run.status === 'active' ? 'text-green-400' : 'text-white/60'}>
+                              {lead.sms_run.status}
                             </span>
                           </div>
+                          <div className="text-white/60">Next: {formatDate(lead.sms_run.next_execute_at)}</div>
                           <div className="text-white/60">
-                            Next: {lead.sms_journey.next_send_at ? formatDate(lead.sms_journey.next_send_at) : '—'}
+                            Last: {lead.last_sms ? `Step ${lead.last_sms.step_order} at ${formatDate(lead.last_sms.completed_at)}` : 'Never'}
                           </div>
-                          <div className="text-white/60">
-                            Last: {lead.last_sms ? `Step ${lead.last_sms.step} at ${formatDate(lead.last_sms.sent_at)}` : 'Never'}
-                          </div>
-                          {lead.sms_journey.last_error && (
-                            <div className="text-red-400 text-xs">Error: {lead.sms_journey.last_error}</div>
+                          {lead.sms_run.last_error && (
+                            <div className="text-red-400 text-xs">Error: {lead.sms_run.last_error}</div>
                           )}
                         </div>
                       ) : (
-                        <div className="text-white/40 text-sm">No SMS journey</div>
+                        <div className="text-white/40 text-sm">No SMS run</div>
                       )}
                     </div>
 
-                    {/* Email Journey Info */}
                     <div className="flex-1 min-w-[200px]">
-                      <div className="text-xs text-white/40 mb-1">Email Journey</div>
-                      {lead.email_journey ? (
+                      <div className="text-xs text-white/40 mb-1">Email Workflow</div>
+                      {lead.email_run ? (
                         <div className="space-y-1 text-sm">
                           <div className="text-white">
-                            Step {lead.email_journey.current_step}/7 ·{' '}
-                            <span className={lead.email_journey.status === 'active' ? 'text-green-400' : 'text-white/60'}>
-                              {lead.email_journey.status}
+                            Step {lead.email_run.current_step}/{emailSteps || '-'} ·{' '}
+                            <span className={lead.email_run.status === 'active' ? 'text-green-400' : 'text-white/60'}>
+                              {lead.email_run.status}
                             </span>
                           </div>
+                          <div className="text-white/60">Next: {formatDate(lead.email_run.next_execute_at)}</div>
                           <div className="text-white/60">
-                            Next: {lead.email_journey.next_send_at ? formatDate(lead.email_journey.next_send_at) : '—'}
+                            Last: {lead.last_email ? `Step ${lead.last_email.step_order} at ${formatDate(lead.last_email.completed_at)}` : 'Never'}
                           </div>
-                          <div className="text-white/60">
-                            Last: {lead.last_email ? `Step ${lead.last_email.step} at ${formatDate(lead.last_email.sent_at)}` : 'Never'}
-                          </div>
-                          {lead.email_journey.last_error && (
-                            <div className="text-red-400 text-xs">Error: {lead.email_journey.last_error}</div>
+                          {lead.email_run.last_error && (
+                            <div className="text-red-400 text-xs">Error: {lead.email_run.last_error}</div>
                           )}
                         </div>
                       ) : (
-                        <div className="text-white/40 text-sm">No email journey</div>
+                        <div className="text-white/40 text-sm">No email run</div>
                       )}
                     </div>
 
-                    {/* Actions */}
-                    <div className="flex flex-col gap-2 min-w-[200px]">
-                      <div className="text-xs text-white/40 mb-1">Actions</div>
+                    <div className="flex flex-col gap-2 min-w-[160px]">
+                      <div className="text-xs text-white/40 mb-1">Status</div>
                       <div className="flex flex-wrap gap-2">
-                        {lead.sms_journey?.status === 'active' && (
-                          <>
-                            <button
-                              onClick={() => handleAction(lead.id, 'pause', 'sms')}
-                              disabled={smsLoading}
-                              className="px-2 py-1 text-xs rounded bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50"
-                            >
-                              Pause SMS
-                            </button>
-                            <button
-                              onClick={() => handleSendNow(lead.id, 'sms')}
-                              disabled={smsLoading}
-                              className="px-2 py-1 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
-                            >
-                              Send SMS Now
-                            </button>
-                          </>
-                        )}
-                        {lead.sms_journey?.status === 'paused' && (
-                          <button
-                            onClick={() => handleAction(lead.id, 'resume', 'sms')}
-                            disabled={smsLoading}
-                            className="px-2 py-1 text-xs rounded bg-green-600 hover:bg-green-700 text-white disabled:opacity-50"
-                          >
-                            Resume SMS
-                          </button>
-                        )}
-                        {lead.email_journey?.status === 'active' && (
-                          <>
-                            <button
-                              onClick={() => handleAction(lead.id, 'pause', 'email')}
-                              disabled={emailLoading}
-                              className="px-2 py-1 text-xs rounded bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50"
-                            >
-                              Pause Email
-                            </button>
-                            <button
-                              onClick={() => handleSendNow(lead.id, 'email')}
-                              disabled={emailLoading}
-                              className="px-2 py-1 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
-                            >
-                              Send Email Now
-                            </button>
-                          </>
-                        )}
-                        {lead.email_journey?.status === 'paused' && (
-                          <button
-                            onClick={() => handleAction(lead.id, 'resume', 'email')}
-                            disabled={emailLoading}
-                            className="px-2 py-1 text-xs rounded bg-green-600 hover:bg-green-700 text-white disabled:opacity-50"
-                          >
-                            Resume Email
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleAction(lead.id, 'cancel', 'both')}
-                          disabled={smsLoading || emailLoading}
-                          className="px-2 py-1 text-xs rounded bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
-                        >
-                          Stop All
-                        </button>
+                        <Badge variant={lead.sms_run?.status === 'active' ? 'success' : 'default'}>SMS {lead.sms_run?.status || 'idle'}</Badge>
+                        <Badge variant={lead.email_run?.status === 'active' ? 'success' : 'default'}>Email {lead.email_run?.status || 'idle'}</Badge>
                       </div>
                     </div>
                   </div>
@@ -456,3 +362,4 @@ export default function MarketingLoop() {
     </div>
   )
 }
+

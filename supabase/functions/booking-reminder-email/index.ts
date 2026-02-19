@@ -312,6 +312,16 @@ Deno.serve(async (req) => {
     if (occurrenceError || !occurrence) {
       return jsonResponse({ error: 'No occurrence found for test email' }, 404)
     }
+    if ((occurrence as any).org_id) {
+      const { data: orgRow } = await supabase
+        .from('organizations')
+        .select('use_workflow_automations')
+        .eq('id', (occurrence as any).org_id)
+        .maybeSingle()
+      if (orgRow?.use_workflow_automations) {
+        return jsonResponse({ success: true, skipped: 'workflow_automations_enabled' })
+      }
+    }
 
     const series = (occurrence as any).booking_series
     const quote = (occurrence as any).quotes
@@ -381,8 +391,17 @@ Deno.serve(async (req) => {
   const orgIds = Array.from(new Set(pendingOccurrences.map((occ: any) => occ.org_id).filter(Boolean)))
   const enabledByOrg = new Map<string, boolean>()
   const configByOrg = new Map<string, Record<string, unknown>>()
+  const workflowEnabledByOrg = new Map<string, boolean>()
 
   if (orgIds.length > 0) {
+    const { data: orgRows } = await supabase
+      .from('organizations')
+      .select('id, use_workflow_automations')
+      .in('id', orgIds)
+    ;(orgRows || []).forEach((row: any) => {
+      workflowEnabledByOrg.set(row.id, Boolean(row.use_workflow_automations))
+    })
+
     const { data: automationRows } = await supabase
       .from('organization_automation_settings')
       .select('org_id, enabled, config')
@@ -399,6 +418,11 @@ Deno.serve(async (req) => {
   const preSkipped: Array<{ occurrence_id: string; reason: string }> = []
 
   for (const occ of pendingOccurrences) {
+    if (occ.org_id && workflowEnabledByOrg.get(occ.org_id)) {
+      preSkipped.push({ occurrence_id: occ.id, reason: 'workflow_automations_enabled' })
+      continue
+    }
+
     const enabled = occ.org_id ? (enabledByOrg.get(occ.org_id) ?? true) : true
     if (!enabled) {
       preSkipped.push({ occurrence_id: occ.id, reason: 'automation_disabled' })

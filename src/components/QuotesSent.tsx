@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { downloadReceiptPdf } from '../lib/receiptPdf'
@@ -375,6 +376,16 @@ export default function QuotesSent() {
                                 </svg>
                               </Button>
                             </a>
+                          )}
+                          {quote.lead_id && (
+                            <Link to={`/app/leads/${quote.lead_id}?return=/app/quotes-sent`}>
+                              <Button variant="ghost" size="sm" title="Open lead profile">
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                              </Button>
+                            </Link>
                           )}
                           <Button
                             variant="ghost"

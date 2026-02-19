@@ -17,11 +17,11 @@ interface TriggerPayload {
   event_type:
     | 'lead_status_change'
     | 'lead_created'
-    | 'quote_sent'
-    | 'quote_accepted'
     | 'booking_created'
     | 'booking_completed'
-    | 'payment_received'
+    | 'booking_updated'
+    | 'cleaner_assigned'
+    | 'booking_paid'
   org_id: string
   entity_type: 'lead' | 'booking' | 'quote'
   entity_id: string
@@ -114,6 +114,33 @@ function calculateNextExecuteAt(
   return new Date()
 }
 
+function calculateTimeBasedNextExecuteAt(
+  workflow: Workflow,
+  payload: TriggerPayload
+): Date | null {
+  const { trigger_config } = workflow
+  const relativeTo = (trigger_config.relative_to as string) || 'start_at'
+  const offsetValue = (trigger_config.offset_value as number) ?? (trigger_config.offset_days as number) ?? 0
+  const offsetUnit = (trigger_config.offset_unit as string) || 'days'
+  const baseValue = payload.new_data?.[relativeTo] as string | undefined
+  const fallback = payload.new_data?.start_at as string | undefined
+  const base = baseValue || fallback
+
+  if (!base) return null
+
+  const baseDate = new Date(base)
+  if (Number.isNaN(baseDate.getTime())) return null
+
+  const unitMs =
+    offsetUnit === 'minutes'
+      ? 60 * 1000
+      : offsetUnit === 'hours'
+      ? 60 * 60 * 1000
+      : 24 * 60 * 60 * 1000
+  const nextTime = new Date(baseDate.getTime() + offsetValue * unitMs)
+  return nextTime
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -138,9 +165,23 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Find matching workflows
-    const triggerType = mapEventToTriggerType(payload.event_type)
+    // Feature flag: only run workflows for orgs that have cut over
+    const { data: orgRow } = await supabase
+      .from('organizations')
+      .select('use_workflow_automations')
+      .eq('id', payload.org_id)
+      .maybeSingle()
 
+    const useWorkflows = Boolean(orgRow?.use_workflow_automations)
+    if (!useWorkflows) {
+      return new Response(
+        JSON.stringify({ success: true, skipped: true, reason: 'workflow_automations_disabled' }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Find matching workflows for lead status changes + event-based triggers
+    const triggerType = mapEventToTriggerType(payload.event_type)
     const { data: workflows, error: workflowsError } = await supabase
       .from('workflows')
       .select(`
@@ -148,6 +189,7 @@ Deno.serve(async (req) => {
         name,
         trigger_type,
         trigger_config,
+        system_key,
         steps:workflow_steps(id, step_order, action_type, action_config)
       `)
       .eq('org_id', payload.org_id)
@@ -161,7 +203,36 @@ Deno.serve(async (req) => {
 
     console.log('[workflow-trigger] Found', workflows?.length || 0, 'potential workflows')
 
-    // Filter to matching workflows and create runs
+    // Cancel active runs when leaving a lead status (if configured)
+    if (payload.event_type === 'lead_status_change' && workflows && workflows.length > 0) {
+      const oldStatus = payload.old_data?.status as string | undefined
+      const newStatus = payload.new_data?.status as string | undefined
+      if (oldStatus && newStatus && oldStatus !== newStatus) {
+        const nowIso = new Date().toISOString()
+        const cancelTargets = (workflows || []).filter((w) => {
+          const cfg = (w.trigger_config as Record<string, unknown>) || {}
+          const cancelOnStatusChange = Boolean(cfg.cancel_on_status_change)
+          if (!cancelOnStatusChange) return false
+          const toStatus = cfg.to_status as string[] | undefined
+          if (!toStatus || toStatus.length === 0) return false
+          return toStatus.includes(oldStatus) && !toStatus.includes(newStatus)
+        })
+
+        for (const workflow of cancelTargets) {
+          await supabase
+            .from('workflow_runs')
+            .update({
+              status: 'cancelled',
+              cancelled_at: nowIso,
+              last_error: 'cancelled_on_status_change',
+            })
+            .eq('workflow_id', workflow.id)
+            .eq('entity_id', payload.entity_id)
+            .in('status', ['active', 'paused'])
+        }
+      }
+    }
+
     const matchingWorkflows = (workflows || []).filter((w) =>
       doesTriggerMatch(w as unknown as Workflow, payload)
     )
@@ -177,10 +248,8 @@ Deno.serve(async (req) => {
         continue
       }
 
-      // Sort steps by order
       steps.sort((a, b) => a.step_order - b.step_order)
 
-      // Check if there's already an active run for this entity
       const { data: existingRun } = await supabase
         .from('workflow_runs')
         .select('id')
@@ -194,10 +263,8 @@ Deno.serve(async (req) => {
         continue
       }
 
-      // Calculate when to execute
       const nextExecuteAt = calculateNextExecuteAt(steps)
 
-      // Create workflow run
       const { data: newRun, error: runError } = await supabase
         .from('workflow_runs')
         .insert({
@@ -224,6 +291,91 @@ Deno.serve(async (req) => {
 
       console.log(`[workflow-trigger] Created run ${newRun.id} for workflow ${workflow.name}`)
       runsCreated.push(newRun.id)
+    }
+
+    // Handle time-based workflows for booking entities
+    if (payload.entity_type === 'booking') {
+      const bookingStatus = (payload.new_data?.status as string | undefined) || ''
+      if (bookingStatus !== 'cancelled' && bookingStatus !== 'skipped') {
+        const { data: timeWorkflows, error: timeError } = await supabase
+          .from('workflows')
+          .select(`
+            id,
+            name,
+            trigger_type,
+            trigger_config,
+            steps:workflow_steps(id, step_order, action_type, action_config)
+          `)
+          .eq('org_id', payload.org_id)
+          .eq('enabled', true)
+          .eq('trigger_type', 'time_based')
+
+        if (timeError) {
+          console.error('[workflow-trigger] Error fetching time-based workflows:', timeError)
+        } else {
+          for (const workflow of timeWorkflows || []) {
+            const steps = (workflow.steps as WorkflowStep[]) || []
+            if (steps.length === 0) continue
+            steps.sort((a, b) => a.step_order - b.step_order)
+
+            const nextExecuteAt = calculateTimeBasedNextExecuteAt(
+              workflow as unknown as Workflow,
+              payload
+            )
+
+            if (!nextExecuteAt) continue
+
+            const { data: existingRun } = await supabase
+              .from('workflow_runs')
+              .select('id')
+              .eq('workflow_id', workflow.id)
+              .eq('entity_id', payload.entity_id)
+              .in('status', ['active', 'paused'])
+              .maybeSingle()
+
+            if (existingRun) {
+              await supabase
+                .from('workflow_runs')
+                .update({
+                  next_execute_at: nextExecuteAt.toISOString(),
+                  metadata: {
+                    trigger_event: payload.event_type,
+                    old_data: payload.old_data,
+                    new_data: payload.new_data,
+                  },
+                })
+                .eq('id', existingRun.id)
+              continue
+            }
+
+            const { data: newRun, error: runError } = await supabase
+              .from('workflow_runs')
+              .insert({
+                org_id: payload.org_id,
+                workflow_id: workflow.id,
+                entity_type: payload.entity_type,
+                entity_id: payload.entity_id,
+                status: 'active',
+                current_step: 1,
+                next_execute_at: nextExecuteAt.toISOString(),
+                metadata: {
+                  trigger_event: payload.event_type,
+                  old_data: payload.old_data,
+                  new_data: payload.new_data,
+                },
+              })
+              .select('id')
+              .single()
+
+            if (runError) {
+              console.error(`[workflow-trigger] Error creating time-based run for workflow ${workflow.id}:`, runError)
+              continue
+            }
+
+            runsCreated.push(newRun.id)
+          }
+        }
+      }
     }
 
     return new Response(

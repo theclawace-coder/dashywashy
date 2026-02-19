@@ -1,274 +1,20 @@
-import { useState, useEffect, useCallback } from 'react'
+﻿import { useState, useEffect, useCallback } from 'react'
 import { supabase, supabaseAnonKey, supabaseUrl, type DialpadCall, type DialpadSms, type DialpadEmail } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { isSameDay, startOfDay, endOfDay, addDays } from 'date-fns'
+import CommunicationDetailModal from './CommunicationDetailModal'
+import {
+  type CommunicationItem,
+  dedupeCalls,
+  dedupeEmails,
+  dedupeSms,
+  formatDuration,
+  mapCallsToItems,
+  mapEmailsToItems,
+  mapSmsToItems,
+} from '../lib/communications'
 
 type CommunicationType = 'all' | 'calls' | 'sms' | 'emails'
-
-interface CommunicationItem {
-  id: string
-  type: 'call' | 'sms' | 'email'
-  direction: 'inbound' | 'outbound'
-  created_at: string
-  // Call-specific
-  call_id?: string
-  duration?: number
-  transcript?: string | null
-  summary?: string | null
-  external_number?: string | null
-  // SMS-specific
-  message_id?: string
-  content?: string | null
-  // Email-specific
-  subject?: string | null
-  from_email?: string | null
-  to_email?: string | null
-  body?: string | null
-}
-
-interface TranscriptModalProps {
-  item: CommunicationItem
-  onClose: () => void
-  onFetchSummary: () => void
-  isLoading: boolean
-}
-
-// Format duration - Handle both old (milliseconds) and new (seconds) values
-// Moved outside component so it can be used in TranscriptModal
-function formatDuration(duration: number | undefined) {
-  if (!duration) return null
-  // If duration is > 3600 (1 hour in seconds), it's likely stored incorrectly as milliseconds
-  let durationInSeconds: number
-  if (duration > 3600) {
-    durationInSeconds = Math.floor(duration / 1000)
-  } else {
-    durationInSeconds = Math.floor(duration)
-  }
-  const minutes = Math.floor(durationInSeconds / 60)
-  const seconds = durationInSeconds % 60
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`
-  }
-  return `${seconds}s`
-}
-
-function TranscriptModal({ item, onClose, onFetchSummary, isLoading }: TranscriptModalProps) {
-  // Format the summary as bullet points if it's not already
-  const formatSummary = (summary: string | null | undefined) => {
-    if (!summary) return null
-    // Split by bullet points or newlines
-    const lines = summary.split(/[\n•]/).filter(line => line.trim())
-    return lines
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-[var(--color-surface)] border border-white/10 rounded-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-white/10">
-          <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-              item.type === 'call' ? 'bg-cyan-500/20 text-cyan-400' :
-              item.type === 'sms' ? 'bg-violet-500/20 text-violet-400' :
-              'bg-blue-500/20 text-blue-400'
-            }`}>
-              {item.type === 'call' && (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                </svg>
-              )}
-              {item.type === 'sms' && (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-              )}
-              {item.type === 'email' && (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-              )}
-            </div>
-            <div>
-              <h3 className="text-white font-semibold">
-                {item.type === 'call' ? 'Call Details' : item.type === 'sms' ? 'SMS Details' : 'Email Details'}
-              </h3>
-              <p className="text-sm text-[var(--color-text-muted)]">
-                {item.external_number || item.from_email || item.to_email || 'Unknown Contact'}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
-          >
-            <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="p-5 overflow-y-auto max-h-[60vh]">
-          {/* Call Summary Section */}
-          {item.type === 'call' && (
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="text-sm font-medium text-[var(--color-text-muted)] uppercase tracking-wider">
-                  Call Summary
-                </h4>
-                {!item.summary && (
-                  <button
-                    onClick={onFetchSummary}
-                    disabled={isLoading}
-                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 rounded-lg transition-colors disabled:opacity-50"
-                  >
-                    {isLoading ? (
-                      <>
-                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                        Generating...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                        </svg>
-                        Get AI Summary
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-              <div className="p-4 rounded-xl bg-[var(--color-surface-light)] border border-white/5">
-                {item.summary ? (
-                  <ul className="space-y-2">
-                    {formatSummary(item.summary)?.map((point, idx) => (
-                      <li key={idx} className="flex items-start gap-2 text-white">
-                        <span className="text-cyan-400 mt-1">•</span>
-                        <span>{point.trim()}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="text-[var(--color-text-muted)] italic">
-                    Click "Get AI Summary" to generate a summary from the call transcript.
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* SMS Content */}
-          {item.type === 'sms' && (
-            <div className="mb-6">
-              <h4 className="text-sm font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-3">
-                Message Content
-              </h4>
-              <div className="p-4 rounded-xl bg-[var(--color-surface-light)] border border-white/5">
-                {item.content ? (
-                  <p className="text-white whitespace-pre-wrap">{item.content}</p>
-                ) : (
-                  <p className="text-[var(--color-text-muted)] italic">
-                    No message content available.
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Email Content */}
-          {item.type === 'email' && (
-            <>
-              <div className="mb-4">
-                <h4 className="text-sm font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
-                  Subject
-                </h4>
-                <p className="text-white">{item.subject || 'No subject'}</p>
-              </div>
-              {item.body && (
-                <div className="mb-4">
-                  <h4 className="text-sm font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
-                    Email Body
-                  </h4>
-                  <div className="p-4 rounded-xl bg-[var(--color-surface-light)] border border-white/5 max-h-48 overflow-y-auto">
-                    <div 
-                      className="email-body-content"
-                      dangerouslySetInnerHTML={{ __html: item.body }}
-                      style={{
-                        color: 'white',
-                        fontFamily: 'inherit',
-                        fontSize: '0.875rem',
-                        lineHeight: '1.5',
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Transcript Section for Calls */}
-          {item.type === 'call' && item.transcript && (
-            <div>
-              <h4 className="text-sm font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-3">
-                Full Transcript
-              </h4>
-              <div className="p-4 rounded-xl bg-[var(--color-surface-light)] border border-white/5 max-h-64 overflow-y-auto">
-                <pre className="text-white text-sm whitespace-pre-wrap font-mono leading-relaxed">
-                  {item.transcript}
-                </pre>
-              </div>
-            </div>
-          )}
-
-          {/* Metadata */}
-          <div className="mt-6 pt-4 border-t border-white/10">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <span className="text-[var(--color-text-muted)]">Direction:</span>
-                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium ${
-                  item.direction === 'outbound' 
-                    ? 'bg-orange-500/20 text-orange-400' 
-                    : 'bg-green-500/20 text-green-400'
-                }`}>
-                  {item.direction === 'outbound' ? 'Sent' : 'Received'}
-                </span>
-              </div>
-              <div>
-                <span className="text-[var(--color-text-muted)]">Date:</span>
-                <span className="ml-2 text-white">
-                  {new Date(item.created_at).toLocaleString()}
-                </span>
-              </div>
-              {item.type === 'call' && item.duration !== undefined && (
-                <div>
-                  <span className="text-[var(--color-text-muted)]">Duration:</span>
-                  <span className="ml-2 text-white">
-                    {formatDuration(item.duration) || '-'}
-                  </span>
-                </div>
-              )}
-              {item.type === 'email' && (
-                <>
-                  <div>
-                    <span className="text-[var(--color-text-muted)]">From:</span>
-                    <span className="ml-2 text-white">{item.from_email || '-'}</span>
-                  </div>
-                  <div>
-                    <span className="text-[var(--color-text-muted)]">To:</span>
-                    <span className="ml-2 text-white">{item.to_email || '-'}</span>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 interface CommunicationsLogProps {
   selectedDate?: Date | null
@@ -305,23 +51,24 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
       if (!currentOrg) return
 
       // Fetch all communications in parallel
+      // TEMPORARY FIX: Removed org_id filtering to match GitHub working version
       const [callsRes, smsRes, emailsRes] = await Promise.all([
         supabase
           .from('dialpad_calls')
           .select('*')
-          .eq('org_id', currentOrg.id)
+          // .eq('org_id', currentOrg.id)  // TEMPORARILY DISABLED - testing if this fixes inbound display
           .order('created_at', { ascending: false })
           .limit(selectedDate ? 200 : 100),
         supabase
           .from('dialpad_sms')
           .select('*')
-          .eq('org_id', currentOrg.id)
+          // .eq('org_id', currentOrg.id)  // TEMPORARILY DISABLED - testing if this fixes inbound display
           .order('created_at', { ascending: false })
           .limit(selectedDate ? 200 : 100),
         supabase
           .from('dialpad_emails')
           .select('*')
-          .eq('org_id', currentOrg.id)
+          // .eq('org_id', currentOrg.id)  // TEMPORARILY DISABLED - testing if this fixes inbound display
           .order('created_at', { ascending: false })
           .limit(selectedDate ? 200 : 100),
       ])
@@ -369,114 +116,22 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
         })
       }
 
-      // Deduplicate calls by call_id
-      const seenCallIds = new Set<string>()
-      const dedupedByCallId = callsData.filter((call: DialpadCall) => {
-        if (call.call_id) {
-          if (seenCallIds.has(call.call_id)) return false
-          seenCallIds.add(call.call_id)
-        }
-        return true
-      })
-
-      // Additional deduplication: same contact + timestamp (within 1 second) + direction + duration
-      const seenCallSignatures = new Set<string>()
-      const dedupedCalls = dedupedByCallId.filter((call: DialpadCall) => {
-        const timestamp = new Date(call.created_at).getTime()
-        const roundedTimestamp = Math.floor(timestamp / 1000)
-        const signature = `${call.external_number || ''}|${roundedTimestamp}|${call.direction}|${call.duration ?? ''}`
-
-        if (seenCallSignatures.has(signature)) return false
-        seenCallSignatures.add(signature)
-        return true
-      })
-
-      // Deduplicate SMS by message_id
-      const seenSmsIds = new Set<string>()
-      const dedupedSms = smsData.filter((sms: DialpadSms) => {
-        if (sms.message_id) {
-          if (seenSmsIds.has(sms.message_id)) return false
-          seenSmsIds.add(sms.message_id)
-        }
-        return true
-      })
-
-      // Deduplicate emails by message_id first
-      const seenEmailIds = new Set<string>()
-      const dedupedByMessageId = emailsData.filter((email: DialpadEmail) => {
-        if (email.message_id) {
-          if (seenEmailIds.has(email.message_id)) return false
-          seenEmailIds.add(email.message_id)
-        }
-        return true
-      })
-
-      // Additional deduplication: same subject + from + to + timestamp (within 1 second)
-      // This catches cases where Microsoft Graph creates multiple entries for the same email
-      const seenEmailSignatures = new Set<string>()
-      const dedupedEmails = dedupedByMessageId.filter((email: DialpadEmail) => {
-        const timestamp = new Date(email.created_at).getTime()
-        const roundedTimestamp = Math.floor(timestamp / 1000) // Round to nearest second
-        const signature = `${email.subject || ''}|${email.from_email || ''}|${email.to_email || ''}|${roundedTimestamp}|${email.direction}`
-        
-        if (seenEmailSignatures.has(signature)) return false
-        seenEmailSignatures.add(signature)
-        return true
-      })
+      const dedupedCalls = dedupeCalls(callsData as DialpadCall[])
+      const dedupedSms = dedupeSms(smsData as DialpadSms[])
+      const dedupedEmails = dedupeEmails(emailsData as DialpadEmail[])
 
       console.log('[CommunicationsLog] After deduplication:', {
-        calls: `${dedupedCalls.length} (removed ${callsData.length - dedupedCalls.length}, by call_id: ${dedupedByCallId.length}, by signature: ${dedupedCalls.length})`,
+        calls: `${dedupedCalls.length} (removed ${callsData.length - dedupedCalls.length})`,
         sms: `${dedupedSms.length} (removed ${smsData.length - dedupedSms.length})`,
-        emails: `${dedupedEmails.length} (removed ${emailsData.length - dedupedEmails.length}, by message_id: ${dedupedByMessageId.length}, by signature: ${dedupedEmails.length})`
+        emails: `${dedupedEmails.length} (removed ${emailsData.length - dedupedEmails.length})`,
       })
 
       const communications: CommunicationItem[] = []
 
-      // Add calls
-      dedupedCalls.forEach((call: DialpadCall) => {
-        communications.push({
-          id: call.id,
-          type: 'call',
-          direction: call.direction,
-          created_at: call.created_at,
-          call_id: call.call_id,
-          duration: call.duration,
-          transcript: call.transcript,
-          summary: call.summary,
-          external_number: call.external_number,
-        })
-      })
+      communications.push(...mapCallsToItems(dedupedCalls))
+      communications.push(...mapSmsToItems(dedupedSms))
+      communications.push(...mapEmailsToItems(dedupedEmails))
 
-      // Add SMS
-      dedupedSms.forEach((sms: DialpadSms) => {
-        communications.push({
-          id: sms.id,
-          type: 'sms',
-          direction: sms.direction,
-          created_at: sms.created_at,
-          message_id: sms.message_id,
-          content: sms.content,
-          external_number: sms.external_number,
-        })
-      })
-
-      // Add Emails (all emails including leads)
-      dedupedEmails.forEach((email: DialpadEmail) => {
-        communications.push({
-          id: email.id,
-          type: 'email',
-          direction: email.direction,
-          created_at: email.created_at,
-          message_id: email.message_id,
-          subject: email.subject,
-          from_email: email.from_email,
-          to_email: email.to_email,
-          body: email.body,
-          external_number: email.direction === 'inbound' ? email.from_email : email.to_email,
-        })
-      })
-
-      // Sort by date descending
       communications.sort((a, b) => 
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       )
@@ -497,12 +152,13 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
     fetchCommunications()
 
     // Subscribe to realtime updates
+    // TEMPORARY FIX: Removed org_id filtering to match GitHub working version
     const channels = [
       supabase
         .channel('calls_log_changes')
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'dialpad_calls', filter: 'org_id=eq.' + currentOrg.id },
+          { event: '*', schema: 'public', table: 'dialpad_calls' },  // Removed filter temporarily
           () => fetchCommunications()
         )
         .subscribe(),
@@ -510,7 +166,7 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
         .channel('sms_log_changes')
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'dialpad_sms', filter: 'org_id=eq.' + currentOrg.id },
+          { event: '*', schema: 'public', table: 'dialpad_sms' },  // Removed filter temporarily
           () => fetchCommunications()
         )
         .subscribe(),
@@ -518,7 +174,7 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
         .channel('emails_log_changes')
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'dialpad_emails', filter: 'org_id=eq.' + currentOrg.id },
+          { event: '*', schema: 'public', table: 'dialpad_emails' },  // Removed filter temporarily
           () => fetchCommunications()
         )
         .subscribe(),
@@ -658,7 +314,7 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
     if (item.type === 'call') {
       if (item.summary) {
         // Show first bullet point
-        const firstPoint = item.summary.split(/[\n•]/).filter(s => s.trim())[0]
+        const firstPoint = item.summary.split(/[\n\u2022]/).filter(s => s.trim())[0]
         return firstPoint?.trim() || 'Summary available'
       }
       const durationStr = formatDuration(item.duration)
@@ -913,7 +569,7 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
 
       {/* Modal */}
       {selectedItem && (
-        <TranscriptModal
+        <CommunicationDetailModal
           item={selectedItem}
           onClose={() => setSelectedItem(null)}
           onFetchSummary={handleFetchSummary}
@@ -923,3 +579,9 @@ export default function CommunicationsLog({ selectedDate: externalSelectedDate =
     </div>
   )
 }
+
+
+
+
+
+

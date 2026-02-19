@@ -10,7 +10,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-  const { orgId, supabaseAdmin } = await resolveOrgFromRequest(req)
+  const { orgId, supabaseAdmin, org } = await resolveOrgFromRequest(req)
   const supabase = supabaseAdmin
 
   let payload: { leadId?: string; status?: string | null }
@@ -69,7 +69,12 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: 'Lead not found' }, 404)
     }
 
-    // Handle Marketing Loop journey start/stop
+    // Handle Marketing Loop journey start/stop (legacy system)
+    const useWorkflowAutomations = Boolean((org as any)?.use_workflow_automations)
+    if (useWorkflowAutomations) {
+      return jsonResponse({ success: true, leadId: data.id, status: data.status, skipped: 'workflow_automations_enabled' })
+    }
+
     const supabaseUrlEnv = Deno.env.get('SUPABASE_URL') || ''
     const actionsUrl = `${supabaseUrlEnv}/functions/v1/marketing-loop-actions`
 
@@ -141,4 +146,3 @@ Deno.serve(async (req) => {
     return jsonError(message, status)
   }
 })
-

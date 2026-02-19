@@ -1402,6 +1402,14 @@ export default function Dispatch() {
                           </button>
 
                           <div className="w-[220px] space-y-2">
+                            {j.series?.lead_id && (
+                              <a
+                                href={`/app/leads/${j.series.lead_id}?return=/app/dispatch`}
+                                className="w-full px-3 py-1.5 text-xs rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center justify-center"
+                              >
+                                Lead profile
+                              </a>
+                            )}
                             {hasCoords && (
                               <button
                                 type="button"
@@ -1565,6 +1573,14 @@ export default function Dispatch() {
                           </button>
 
                           <div className="w-[220px] space-y-2">
+                            {j.series?.lead_id && (
+                              <a
+                                href={`/app/leads/${j.series.lead_id}?return=/app/dispatch`}
+                                className="w-full px-3 py-1.5 text-xs rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center justify-center"
+                              >
+                                Lead profile
+                              </a>
+                            )}
                             {hasCoords && (
                               <button
                                 type="button"

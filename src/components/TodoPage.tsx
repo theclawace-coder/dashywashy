@@ -32,7 +32,7 @@ interface Todo {
 }
 
 interface Lead { id: string; name: string | null; phone_number: string | null; status: string | null; last_text_date?: string | number | null; last_text_body?: string | null; created_at: string }
-interface JobOccurrence { id: string; series_id: string; start_at: string; end_at: string; status: string; cleaner_id: string | null; series?: { title: string; lead?: { name: string | null }; quote_id?: string } }
+interface JobOccurrence { id: string; series_id: string; start_at: string; end_at: string; status: string; cleaner_id: string | null; series?: { title: string; lead_id?: string | null; lead?: { id: string; name: string | null }; quote_id?: string } }
 interface CleanerPayout { id: string; occurrence_id: string; cleaner_id: string; paid_at: string | null; payout_amount: number; cleaner?: { full_name: string }; occurrence?: { start_at: string; series?: { title: string } } }
 
 const TODO_CONFIG: Record<TodoType, { color: string; bgMuted: string; icon: string; label: string }> = {
@@ -97,15 +97,15 @@ export default function TodoPage() {
       const leadsNoStatus = (leads || []).filter((l: any) => !l.status || l.status === '')
       setLeadsWithoutStatus(leadsNoStatus)
       // Unassigned jobs
-      const { data: unassignedData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, series:booking_series(title, lead:extracted_leads(name), quote_id)`).eq('org_id', currentOrg!.id).gte('start_at', today.toISOString()).lt('start_at', fiveDaysFromNow.toISOString()).is('cleaner_id', null).neq('status', 'cancelled').order('start_at', { ascending: true })
+      const { data: unassignedData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, series:booking_series(title, lead_id, lead:extracted_leads(id, name), quote_id)`).eq('org_id', currentOrg!.id).gte('start_at', today.toISOString()).lt('start_at', fiveDaysFromNow.toISOString()).is('cleaner_id', null).neq('status', 'cancelled').order('start_at', { ascending: true })
       setUnassignedJobs((unassignedData || []) as any)
 
       // Overdue unmarked
-      const { data: overdueData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, series:booking_series(title, lead:extracted_leads(name), quote_id)`).eq('org_id', currentOrg!.id).lt('start_at', now.toISOString()).neq('status', 'completed').neq('status', 'cancelled').order('start_at', { ascending: false }).limit(1000)
+      const { data: overdueData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, series:booking_series(title, lead_id, lead:extracted_leads(id, name), quote_id)`).eq('org_id', currentOrg!.id).lt('start_at', now.toISOString()).neq('status', 'completed').neq('status', 'cancelled').order('start_at', { ascending: false }).limit(1000)
       setOverdueUnmarkedJobs((overdueData || []) as any)
 
       // Past due unpaid
-      const { data: pastDueData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, payment_status, payment_paid_at, series:booking_series(title, lead:extracted_leads(name), quote_id)`).eq('org_id', currentOrg!.id).lt('start_at', twoDaysAgo.toISOString()).in('status', ['completed', 'scheduled']).order('start_at', { ascending: false }).limit(100)
+      const { data: pastDueData } = await supabase.from('booking_occurrences').select(`id, series_id, quote_id, start_at, end_at, status, cleaner_id, payment_status, payment_paid_at, series:booking_series(title, lead_id, lead:extracted_leads(id, name), quote_id)`).eq('org_id', currentOrg!.id).lt('start_at', twoDaysAgo.toISOString()).in('status', ['completed', 'scheduled']).order('start_at', { ascending: false }).limit(100)
       const occurrenceIds = (pastDueData || []).map((o: any) => o.id)
       if (occurrenceIds.length > 0) {
         const quoteIds = (pastDueData || []).map((o: any) => o.quote_id || o.series?.quote_id).filter(Boolean)
@@ -384,6 +384,9 @@ export default function TodoPage() {
                                 <p className="text-xs text-[var(--color-text-muted)]">{lead.phone_number || 'No phone'}</p>
                               </div>
                               <div className="flex items-center gap-2">
+                                <a href={`/app/leads/${lead.id}?return=/app/todo`}>
+                                  <Button size="sm" variant="ghost">Profile</Button>
+                                </a>
                                 <SmsLead leadId={lead.id} leadName={lead.name} phoneNumber={lead.phone_number} onSent={({ sentAt, message }) => setLeadsWithoutStatus((prev) => prev.map((l) => l.id === lead.id ? { ...l, last_text_date: sentAt, last_text_body: message } : l))} />
                                 <Button size="sm" variant="primary" onClick={() => handleCallLead(lead.id, lead.phone_number)} loading={callingLeadId === lead.id}>Call</Button>
                                 <select onChange={(e) => handleMarkLeadStatus(lead.id, e.target.value)} className="input px-2 py-1 text-xs" defaultValue="">
@@ -402,6 +405,7 @@ export default function TodoPage() {
                         
                         if (section.type === 'unassigned_job') {
                           const job = item as JobOccurrence
+                          const leadProfileHref = job.series?.lead_id ? `/app/leads/${job.series.lead_id}?return=/app/todo` : null
                           return (
                             <div key={job.id} className="p-3 rounded-xl bg-[var(--color-surface)] border border-[var(--glass-border)] flex items-center justify-between gap-3">
                               <div className="min-w-0 flex-1">
@@ -409,7 +413,10 @@ export default function TodoPage() {
                                 <p className="text-xs text-[var(--color-text-muted)]">{format(new Date(job.start_at), 'EEE, MMM d • h:mm a')}</p>
                               </div>
                               <div className="flex items-center gap-2">
-                                <a href="/dispatch"><Button size="sm" variant="primary">Assign →</Button></a>
+                                {leadProfileHref && (
+                                  <a href={leadProfileHref}><Button size="sm" variant="ghost">Profile</Button></a>
+                                )}
+                                <a href="/app/dispatch"><Button size="sm" variant="primary">Assign →</Button></a>
                                 <Button size="sm" variant="ghost" onClick={() => handleDismissItem(key)}>✕</Button>
                               </div>
                             </div>
@@ -418,6 +425,7 @@ export default function TodoPage() {
                         
                         if (section.type === 'mark_jobs_complete') {
                           const job = item as JobOccurrence
+                          const leadProfileHref = job.series?.lead_id ? `/app/leads/${job.series.lead_id}?return=/app/todo` : null
                           return (
                             <div key={job.id} className="p-3 rounded-xl bg-[var(--color-surface)] border border-[var(--glass-border)] flex items-center justify-between gap-3">
                               <div className="min-w-0 flex-1">
@@ -425,6 +433,9 @@ export default function TodoPage() {
                                 <p className="text-xs text-[var(--color-text-muted)]">{format(new Date(job.start_at), 'EEE, MMM d • h:mm a')}</p>
                               </div>
                               <div className="flex items-center gap-2">
+                                {leadProfileHref && (
+                                  <a href={leadProfileHref}><Button size="sm" variant="ghost">Profile</Button></a>
+                                )}
                                 <Button size="sm" variant="primary" onClick={() => handleMarkJobComplete(job.id)}>Complete ✓</Button>
                                 <Button size="sm" variant="ghost" onClick={() => handleDismissItem(key)}>✕</Button>
                               </div>
@@ -434,6 +445,7 @@ export default function TodoPage() {
                         
                         if (section.type === 'past_due_unpaid') {
                           const job = item as JobOccurrence
+                          const leadProfileHref = job.series?.lead_id ? `/app/leads/${job.series.lead_id}?return=/app/todo` : null
                           return (
                             <div key={job.id} className="p-3 rounded-xl bg-[var(--color-surface)] border border-[var(--glass-border)] flex items-center justify-between gap-3">
                               <div className="min-w-0 flex-1">
@@ -441,6 +453,9 @@ export default function TodoPage() {
                                 <p className="text-xs text-[var(--color-text-muted)]">Due: {format(new Date(job.start_at), 'MMM d, yyyy')}</p>
                               </div>
                               <div className="flex items-center gap-2">
+                                {leadProfileHref && (
+                                  <a href={leadProfileHref}><Button size="sm" variant="ghost">Profile</Button></a>
+                                )}
                                 <Button size="sm" variant="primary" onClick={() => window.dispatchEvent(new CustomEvent('open-job-modal', { detail: { occurrenceId: job.id } }))}>View Job</Button>
                                 <Button size="sm" variant="ghost" onClick={() => handleDismissItem(key)}>✕</Button>
                               </div>

@@ -1,6 +1,7 @@
 ﻿import "jsr:@supabase/functions-js/edge-runtime.d.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
 import { resolveOrgFromRequest, getOrgIntegration, getAutomationSetting, corsHeaders, jsonResponse, jsonError, OrgContext } from '../_shared/org-resolver.ts'
+import { getPlanConfig } from '../_shared/plan.ts'
 import { calculateQuote, generateQuoteNumber, generateShareToken, SERVICE_HOURS, STANDARD_ADD_ONS, ADDON_DISPLAY_NAMES, DEFAULT_PRICING, type ServiceType, type QuoteInput } from '../_shared/quote-calculator.ts'
 
 // ---------------------------------------------------------------------------
@@ -7752,6 +7753,11 @@ Deno.serve(async (req) => {
   try {
     const ctx = await resolveOrgFromRequest(req)
     const { orgId, org, supabaseAdmin } = ctx
+    const planConfig = getPlanConfig(org.plan)
+
+    if (!planConfig.aiEnabled) {
+      return jsonError('AI assistant is available on Growth and Unlimited plans. Please upgrade to enable it.', 402)
+    }
 
     // Get OpenAI configuration
     const openaiConfig = await getOrgIntegration(supabaseAdmin, orgId, 'openai')

@@ -1,4 +1,5 @@
 import { supabase, supabaseAnonKey, supabaseUrl } from './supabase'
+import { getMonthlyJobLimit, getPlanLabel, getUtcMonthBounds } from './plans'
 
 export type RepeatType = 'none' | 'weekly' | 'fortnightly' | '3-weekly' | 'monthly' | '2-monthly'
 
@@ -102,6 +103,20 @@ function repeatTypeToRRule(repeatType: RepeatType): string | null {
   }
 }
 
+function getDaysInMonth(year: number, monthIndex: number) {
+  return new Date(year, monthIndex + 1, 0).getDate()
+}
+
+function addMonthsPreservingDay(date: Date, months: number, anchorDay: number) {
+  const next = new Date(date)
+  const targetMonthIndex = next.getMonth() + months
+  const targetYear = next.getFullYear() + Math.floor(targetMonthIndex / 12)
+  const normalizedMonth = ((targetMonthIndex % 12) + 12) % 12
+  const targetDay = Math.min(anchorDay, getDaysInMonth(targetYear, normalizedMonth))
+  next.setFullYear(targetYear, normalizedMonth, targetDay)
+  return next
+}
+
 function generateOccurrences(startDate: Date, rrule: string | null, untilDate: Date | null, maxCount: number): Date[] {
   const dates: Date[] = [new Date(startDate)]
 
@@ -116,15 +131,14 @@ function generateOccurrences(startDate: Date, rrule: string | null, untilDate: D
   const freq = parts['FREQ']
   const interval = parseInt(parts['INTERVAL'] || '1', 10)
   let currentDate = new Date(startDate)
+  const anchorDay = startDate.getDate()
   const endDate = untilDate || new Date(startDate.getTime() + 365 * 24 * 60 * 60 * 1000) // default: 1 year
 
   while (dates.length < maxCount) {
     if (freq === 'WEEKLY') {
       currentDate = new Date(currentDate.getTime() + interval * 7 * 24 * 60 * 60 * 1000)
     } else if (freq === 'MONTHLY') {
-      const nextMonth = new Date(currentDate)
-      nextMonth.setMonth(nextMonth.getMonth() + interval)
-      currentDate = nextMonth
+      currentDate = addMonthsPreservingDay(currentDate, interval, anchorDay)
     } else {
       break
     }
@@ -257,7 +271,11 @@ async function createBookingViaEdge(payload: CreateBookingPayload): Promise<Book
     throw new Error(error.message || 'Edge function failed')
   }
   if (data?.error) {
-    throw new Error(data.error)
+    const err = new Error(data.message || data.error)
+    if (data.error === 'plan_limit_reached') {
+      ;(err as any).code = 'plan_limit_reached'
+    }
+    throw err
   }
   if (!data?.series?.id) {
     throw new Error('Edge function did not return a booking id')
@@ -275,6 +293,7 @@ async function createBookingDirect(payload: CreateBookingPayload): Promise<Booki
   const rrule = repeatTypeToRRule(payload.repeatType)
   const untilDate = payload.untilDate ? new Date(payload.untilDate) : null
   const maxOccurrences = payload.occurrenceCount || (rrule ? 52 : 1)
+  const occurrenceDates = generateOccurrences(startDate, rrule, untilDate, maxOccurrences)
 
   // Verify lead exists
   const { data: leadExists, error: leadError } = await supabase
@@ -292,6 +311,40 @@ async function createBookingDirect(payload: CreateBookingPayload): Promise<Booki
   const orgId = baseQuote.org_id
   if (!orgId) {
     throw new Error('Quote is missing org context; cannot create booking')
+  }
+
+  // Enforce monthly job limits for direct inserts (fallback path)
+  const { data: orgRow, error: orgError } = await supabase
+    .from('organizations')
+    .select('plan')
+    .eq('id', orgId)
+    .single()
+
+  if (orgError) {
+    throw new Error('Unable to verify plan limits. Please try again.')
+  }
+
+  const planLimit = getMonthlyJobLimit(orgRow?.plan)
+  if (planLimit !== null) {
+    const { start, end } = getUtcMonthBounds(new Date())
+    const { count, error: usageError } = await supabase
+      .from('booking_occurrences')
+      .select('id', { count: 'exact', head: true })
+      .eq('org_id', orgId)
+      .gte('created_at', start.toISOString())
+      .lt('created_at', end.toISOString())
+
+    if (usageError) {
+      throw new Error('Unable to verify plan limits. Please try again.')
+    }
+
+    const used = count ?? 0
+    if (used + occurrenceDates.length > planLimit) {
+      const planLabel = getPlanLabel(orgRow?.plan)
+      const err = new Error(`Your ${planLabel} plan allows ${planLimit} scheduled jobs per month. You have ${used} already and tried to add ${occurrenceDates.length}.`)
+      ;(err as any).code = 'plan_limit_reached'
+      throw err
+    }
   }
 
   const quoteAddress = baseQuote.address || null
@@ -324,7 +377,6 @@ async function createBookingDirect(payload: CreateBookingPayload): Promise<Booki
     throw new Error(seriesError?.message || 'Failed to create booking series')
   }
 
-  const occurrenceDates = generateOccurrences(startDate, rrule, untilDate, maxOccurrences)
   const startingVersion = await getNextQuoteVersion(baseQuote.id)
   const variantPayloads = occurrenceDates.map((_, index) => buildVariantPayload(baseQuote, startingVersion + index))
 
@@ -397,7 +449,11 @@ export async function createBooking(payload: CreateBookingPayload): Promise<Book
       const responseData = await response.json().catch(() => ({}))
 
       if (!response.ok || responseData?.error) {
-        throw new Error(responseData?.error || `Edge function failed (${response.status})`)
+        const err = new Error(responseData?.message || responseData?.error || `Edge function failed (${response.status})`)
+        if (responseData?.error === 'plan_limit_reached') {
+          ;(err as any).code = 'plan_limit_reached'
+        }
+        throw err
       }
 
       if (!responseData?.series?.id) {

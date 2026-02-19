@@ -74,8 +74,11 @@ export default function OnboardingPage() {
   const [stripeKey, setStripeKey] = useState('')
   const [stripeWebhookSecret, setStripeWebhookSecret] = useState('')
   const [dialpadKey, setDialpadKey] = useState('')
+  const [dialpadUserId, setDialpadUserId] = useState('')
   const [outlookTenant, setOutlookTenant] = useState('')
   const [outlookClientId, setOutlookClientId] = useState('')
+  const [outlookClientSecret, setOutlookClientSecret] = useState('')
+  const [outlookUserEmail, setOutlookUserEmail] = useState('')
   const [resendKey, setResendKey] = useState('')
   const [resendFromEmail, setResendFromEmail] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
@@ -224,7 +227,9 @@ export default function OnboardingPage() {
       integrations.push({ provider: 'stripe', config })
     }
     if (dialpadKey.trim()) {
-      integrations.push({ provider: 'dialpad', config: { api_key: dialpadKey.trim() } })
+      const config: Record<string, string> = { api_key: dialpadKey.trim() }
+      if (dialpadUserId.trim()) config.user_id = dialpadUserId.trim()
+      integrations.push({ provider: 'dialpad', config })
     }
     if (outlookTenant.trim() || outlookClientId.trim()) {
       integrations.push({
@@ -232,6 +237,8 @@ export default function OnboardingPage() {
         config: {
           tenant_id: outlookTenant.trim(),
           client_id: outlookClientId.trim(),
+          client_secret: outlookClientSecret.trim(),
+          user_email: outlookUserEmail.trim(),
         },
       })
     }
@@ -269,7 +276,7 @@ export default function OnboardingPage() {
   const sendInvites = async () => {
     const validInvites = invites.filter((inv) => inv.email.trim())
     if (validInvites.length === 0) {
-      navigate('/')
+      navigate('/app')
       return
     }
 
@@ -293,7 +300,7 @@ export default function OnboardingPage() {
     }
 
     setInviteSending(false)
-    navigate('/')
+    navigate('/app')
   }
 
   const addInviteRow = () => setInvites((prev) => [...prev, { email: '', role: 'staff' }])
@@ -474,7 +481,10 @@ export default function OnboardingPage() {
 
                 <div className="p-4 rounded-xl bg-[var(--color-surface)] border border-[var(--glass-border)]">
                   <p className="text-sm font-medium text-white mb-3">Dialpad (Calls & SMS)</p>
-                  <Input label="API KEY" value={dialpadKey} onChange={(e) => setDialpadKey(e.target.value)} placeholder="dp_..." />
+                  <div className="space-y-3">
+                    <Input label="API KEY" value={dialpadKey} onChange={(e) => setDialpadKey(e.target.value)} placeholder="dp_..." />
+                    <Input label="USER ID (OPTIONAL)" value={dialpadUserId} onChange={(e) => setDialpadUserId(e.target.value)} placeholder="Dialpad user ID" />
+                  </div>
                 </div>
 
                 <div className="p-4 rounded-xl bg-[var(--color-surface)] border border-[var(--glass-border)]">
@@ -482,6 +492,8 @@ export default function OnboardingPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <Input label="TENANT ID" value={outlookTenant} onChange={(e) => setOutlookTenant(e.target.value)} placeholder="Azure AD Tenant ID" />
                     <Input label="CLIENT ID" value={outlookClientId} onChange={(e) => setOutlookClientId(e.target.value)} placeholder="App Registration Client ID" />
+                    <Input label="CLIENT SECRET" type="password" value={outlookClientSecret} onChange={(e) => setOutlookClientSecret(e.target.value)} placeholder="Client secret value" />
+                    <Input label="USER EMAIL" type="email" value={outlookUserEmail} onChange={(e) => setOutlookUserEmail(e.target.value)} placeholder="user@yourdomain.com" />
                   </div>
                 </div>
 
@@ -581,7 +593,7 @@ export default function OnboardingPage() {
                   variant="ghost"
                   onClick={() => {
                     if (step === 4) {
-                      navigate('/')
+                      navigate('/app')
                     } else {
                       nextStep()
                     }

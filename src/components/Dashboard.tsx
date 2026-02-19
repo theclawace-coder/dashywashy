@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase, supabaseUrl, supabaseAnonKey, type DialpadCall, type DialpadSms, type DialpadEmail } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { playSaveSound } from '../lib/sounds'
@@ -58,6 +59,30 @@ interface ExtractedLead {
   lead_to_call_minutes?: number | null
   last_text_date?: string | number | null
   last_text_body?: string | null
+}
+
+interface DashboardCleanItem {
+  id: string
+  start_at: string
+  status: string
+  series?: {
+    title?: string | null
+    lead?: {
+      id?: string | null
+      name?: string | null
+    } | null
+  } | null
+}
+
+interface DashboardScheduledNote {
+  id: string
+  lead_id: string
+  body: string
+  callback_at: string
+  lead?: {
+    id?: string | null
+    name?: string | null
+  } | null
 }
 
 const LEAD_STATUS_OPTIONS = [
@@ -191,6 +216,12 @@ type EmailWebhookStatus = {
   message?: string
 }
 
+// Dialpad integration status
+type DialpadStatus = {
+  state: 'checking' | 'connected' | 'disconnected' | 'error'
+  message?: string
+}
+
 // =============================================================================
 // MAIN DASHBOARD COMPONENT
 // =============================================================================
@@ -198,6 +229,8 @@ type EmailWebhookStatus = {
 export default function Dashboard() {
   const { addToast } = useToast()
   const { currentOrg } = useAuth()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [metrics, setMetrics] = useState<Metrics>({
     uniqueCalls: 0,
     outboundCalls: 0,
@@ -218,6 +251,8 @@ export default function Dashboard() {
     leadsToWonJobRatio: 0,
   })
   const [extractedLeads, setExtractedLeads] = useState<ExtractedLead[]>([])
+  const [todayCleans, setTodayCleans] = useState<DashboardCleanItem[]>([])
+  const [todayScheduledNotes, setTodayScheduledNotes] = useState<DashboardScheduledNote[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
@@ -234,6 +269,9 @@ export default function Dashboard() {
   const [callingLeadId, setCallingLeadId] = useState<string | null>(null)
   const [deletingLeadId, setDeletingLeadId] = useState<string | null>(null)
   const [emailWebhookStatus, setEmailWebhookStatus] = useState<EmailWebhookStatus>({ state: 'checking' })
+  const [dialpadStatus, setDialpadStatus] = useState<DialpadStatus>({ state: 'checking' })
+  const [isConnectingWebhook, setIsConnectingWebhook] = useState(false)
+  const [isSyncingDialpad, setIsSyncingDialpad] = useState(false)
   const queryOpenRef = useRef(false)
   
   // Encouragement state
@@ -241,6 +279,17 @@ export default function Dashboard() {
 
   // Calculate streak (days with activity)
   const [streak, setStreak] = useState(0)
+
+  useEffect(() => {
+    const leadParam = searchParams.get('lead')
+    if (leadParam) {
+      const params = new URLSearchParams(searchParams)
+      params.delete('lead')
+      const query = params.toString()
+      const target = `/app/leads/${leadParam}${query ? `?${query}` : ''}`
+      navigate(target, { replace: true })
+    }
+  }, [searchParams, navigate])
 
   const getStartOfToday = useCallback(() => {
     const now = new Date()
@@ -273,10 +322,11 @@ export default function Dashboard() {
         0, 0, 0, 0
       ).toISOString()
 
+      // TEMPORARY FIX: Removed org_id filtering to match GitHub working version
       const { data: calls, error: callsError } = await supabase
         .from('dialpad_calls')
         .select('*')
-        .eq('org_id', currentOrg.id)
+        // .eq('org_id', currentOrg.id)  // TEMPORARILY DISABLED
         .gte('created_at', lookbackStartIso)
         .order('created_at', { ascending: false })
 
@@ -285,7 +335,7 @@ export default function Dashboard() {
       const { data: sms, error: smsError } = await supabase
         .from('dialpad_sms')
         .select('*')
-        .eq('org_id', currentOrg.id)
+        // .eq('org_id', currentOrg.id)  // TEMPORARILY DISABLED
         .gte('created_at', lookbackStartIso)
         .order('created_at', { ascending: false })
 
@@ -294,7 +344,7 @@ export default function Dashboard() {
       const { data: emails, error: emailsError } = await supabase
         .from('dialpad_emails')
         .select('*')
-        .eq('org_id', currentOrg.id)
+        // .eq('org_id', currentOrg.id)  // TEMPORARILY DISABLED
         .gte('created_at', lookbackStartIso)
         .order('created_at', { ascending: false })
 
@@ -450,7 +500,8 @@ export default function Dashboard() {
         return Number(median.toFixed(1))
       })()
       
-      const wonLeads = extractedLeadsData.filter((lead) => lead.status === 'Job Won')
+      const visibleLeads = extractedLeadsData.filter((lead) => lead.status !== 'Archived')
+      const wonLeads = visibleLeads.filter((lead) => lead.status === 'Job Won')
       const wonJobs = wonLeads.length
       const wonJobsSetToday = wonLeads.filter((lead) => {
         if (!lead.updated_at) return false
@@ -461,7 +512,51 @@ export default function Dashboard() {
       const commsScore = callsOver30s + (smsSent + emailsSent) / 2
       const commsToWonJobRatio = wonJobsSetToday > 0 ? Number((commsScore / wonJobsSetToday).toFixed(2)) : 0
       const leadToCallAvgPerWonJob = wonJobsSetToday > 0 ? Number((averageLeadToCallMinutes / wonJobsSetToday).toFixed(2)) : 0
-      const leadsToWonJobRatio = wonJobsSetToday > 0 ? Number((extractedLeadsData.length / wonJobsSetToday).toFixed(2)) : 0
+      const leadsToWonJobRatio = wonJobsSetToday > 0 ? Number((visibleLeads.length / wonJobsSetToday).toFixed(2)) : 0
+
+      try {
+        const [cleansRes, notesRes] = await Promise.all([
+          supabase
+            .from('booking_occurrences')
+            .select('id, start_at, status, series:booking_series(title, lead:extracted_leads(id, name))')
+            .eq('org_id', currentOrg.id)
+            .gte('start_at', dayStart.toISOString())
+            .lte('start_at', dayEnd.toISOString())
+            .neq('status', 'cancelled')
+            .order('start_at', { ascending: true })
+            .limit(30),
+          supabase
+            .from('lead_journal_entries')
+            .select('id, lead_id, body, callback_at, callback_completed_at, lead:extracted_leads(id, name)')
+            .eq('org_id', currentOrg.id)
+            .eq('entry_type', 'callback')
+            .is('callback_completed_at', null)
+            .gte('callback_at', dayStart.toISOString())
+            .lte('callback_at', dayEnd.toISOString())
+            .order('callback_at', { ascending: true })
+            .limit(30),
+        ])
+
+        if (!cleansRes.error) {
+          setTodayCleans((cleansRes.data || []) as DashboardCleanItem[])
+        } else {
+          console.error('Failed to fetch today cleans', cleansRes.error)
+          setTodayCleans([])
+        }
+
+        if (!notesRes.error) {
+          setTodayScheduledNotes((notesRes.data || []) as DashboardScheduledNote[])
+        } else if (notesRes.error.code === 'PGRST205' || notesRes.error.code === '42P01') {
+          setTodayScheduledNotes([])
+        } else {
+          console.error('Failed to fetch scheduled notes', notesRes.error)
+          setTodayScheduledNotes([])
+        }
+      } catch (scheduleErr) {
+        console.error('Failed to load dashboard schedule', scheduleErr)
+        setTodayCleans([])
+        setTodayScheduledNotes([])
+      }
 
       setMetrics({
         uniqueCalls,
@@ -472,7 +567,7 @@ export default function Dashboard() {
         smsReceived,
         emailsSent,
         emailsReceived,
-        leads: extractedLeadsData.length,
+        leads: visibleLeads.length,
         quotesForUniqueLeads,
         averageLeadToCallMinutes,
         medianLeadToCallMinutes,
@@ -482,7 +577,7 @@ export default function Dashboard() {
         leadToCallAvgPerWonJob,
         leadsToWonJobRatio,
       })
-      setExtractedLeads(extractedLeadsData)
+      setExtractedLeads(visibleLeads)
 
       // Calculate streak
       let currentStreak = 0
@@ -522,11 +617,13 @@ export default function Dashboard() {
         setEmailWebhookStatus({ state: 'error', message: 'Not authenticated' })
         return
       }
-      const response = await fetch(`${supabaseUrl}/functions/v1/setup-outlook-webhook`, {
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      })
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${session.access_token}`,
+      }
+      if (currentOrg?.id) {
+        headers['X-Org-Id'] = currentOrg.id
+      }
+      const response = await fetch(`${supabaseUrl}/functions/v1/setup-outlook-webhook`, { headers })
       if (!response.ok) throw new Error(`Status ${response.status}`)
       const data = await response.json()
       const subscriptions = Array.isArray(data?.value) ? data.value : []
@@ -569,29 +666,123 @@ export default function Dashboard() {
         message: err instanceof Error ? err.message : 'Unable to check email status',
       })
     }
-  }, [])
+  }, [currentOrg?.id])
+
+  // Fetch dialpad integration status
+  const fetchDialpadStatus = useCallback(async () => {
+    setDialpadStatus((prev) => ({ ...prev, state: 'checking', message: undefined }))
+    try {
+      const { data: integration } = await supabase
+        .from('organization_integrations')
+        .select('enabled, config')
+        .eq('org_id', currentOrg?.id || '')
+        .eq('provider', 'dialpad')
+        .maybeSingle()
+
+      if (!integration || !integration.enabled) {
+        setDialpadStatus({ state: 'disconnected', message: 'Dialpad not configured' })
+        return
+      }
+
+      const config = integration.config as Record<string, string>
+      if (!config.api_key) {
+        setDialpadStatus({ state: 'disconnected', message: 'API key missing' })
+        return
+      }
+
+      setDialpadStatus({ state: 'connected' })
+    } catch (err) {
+      console.error('Error checking dialpad status:', err)
+      setDialpadStatus({
+        state: 'error',
+        message: err instanceof Error ? err.message : 'Unable to check Dialpad status',
+      })
+    }
+  }, [currentOrg?.id])
+
+  // Sync all communications (email + dialpad)
+  const handleSyncAll = async () => {
+    try {
+      setIsLoading(true)
+      setIsSyncingDialpad(true)
+      addToast({ type: 'info', title: 'Syncing all communications...', message: 'This may take a moment' })
+
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${token}`,
+      }
+      if (currentOrg?.id) {
+        headers['X-Org-Id'] = currentOrg.id
+      }
+
+      // Sync both in parallel
+      const [emailResult, dialpadResult] = await Promise.allSettled([
+        fetch(`${supabaseUrl}/functions/v1/outlook-email-sync`, {
+          method: 'POST',
+          headers,
+        }).then(r => r.json()),
+        fetch(`${supabaseUrl}/functions/v1/sync-dialpad`, {
+          method: 'POST',
+          headers,
+        }).then(r => r.json()),
+      ])
+
+      const emailData = emailResult.status === 'fulfilled' ? emailResult.value : null
+      const dialpadData = dialpadResult.status === 'fulfilled' ? dialpadResult.value : null
+
+      const messages: string[] = []
+      if (emailData?.total) messages.push(`${emailData.total} emails`)
+      if (dialpadData?.calls || dialpadData?.sms) {
+        messages.push(`${dialpadData.calls || 0} calls, ${dialpadData.sms || 0} SMS`)
+      }
+
+      addToast({
+        type: 'success',
+        title: 'Sync complete',
+        message: messages.length > 0 ? messages.join(', ') : 'All communications updated'
+      })
+
+      setTimeout(fetchMetrics, 1000)
+      fetchEmailWebhookStatus()
+      fetchDialpadStatus()
+    } catch (err) {
+      console.error('Error syncing all:', err)
+      addToast({ type: 'error', title: 'Sync failed', message: err instanceof Error ? err.message : 'Unknown error' })
+    } finally {
+      setIsLoading(false)
+      setIsSyncingDialpad(false)
+    }
+  }
 
   // Initial fetch and realtime subscription
   useEffect(() => {
     if (!currentOrg) return
     fetchMetrics()
     fetchEmailWebhookStatus()
+    fetchDialpadStatus()
     const emailStatusInterval = setInterval(fetchEmailWebhookStatus, 5 * 60 * 1000)
+    const dialpadStatusInterval = setInterval(fetchDialpadStatus, 5 * 60 * 1000)
 
     // Realtime subscriptions
+    // TEMPORARY FIX: Removed org_id filtering to match GitHub working version
     const callsChannel = supabase
       .channel('dialpad_calls_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_calls', filter: 'org_id=eq.' + currentOrg.id }, () => fetchMetrics())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_calls' }, () => fetchMetrics())
       .subscribe()
 
     const smsChannel = supabase
       .channel('dialpad_sms_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_sms', filter: 'org_id=eq.' + currentOrg.id }, () => fetchMetrics())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_sms' }, () => fetchMetrics())
       .subscribe()
 
     const emailsChannel = supabase
       .channel('dialpad_emails_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_emails', filter: 'org_id=eq.' + currentOrg.id }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dialpad_emails' }, (payload) => {
         const email = payload.new as any
         const isLead = email?.subject && (
           /^New message from\s+"[^"]+"$/i.test(email.subject.replace(/&quot;/g, '"').trim()) ||
@@ -618,13 +809,14 @@ export default function Dashboard() {
 
     return () => {
       clearInterval(emailStatusInterval)
+      clearInterval(dialpadStatusInterval)
       supabase.removeChannel(callsChannel)
       supabase.removeChannel(smsChannel)
       supabase.removeChannel(emailsChannel)
       supabase.removeChannel(extractedLeadsChannel)
       window.removeEventListener('sync-emails', handleSyncEmails)
     }
-  }, [fetchMetrics, fetchEmailWebhookStatus, currentOrg])
+  }, [fetchMetrics, fetchEmailWebhookStatus, fetchDialpadStatus, currentOrg])
 
   useEffect(() => {
     if (!currentOrg) return
@@ -719,19 +911,28 @@ export default function Dashboard() {
     try {
       setIsLoading(true)
       addToast({ type: 'info', title: 'Syncing emails...', message: 'Pulling latest from Outlook' })
-      
+
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${token}`,
+      }
+      if (currentOrg?.id) {
+        headers['X-Org-Id'] = currentOrg.id
+      }
+
       const response = await fetch(`${supabaseUrl}/functions/v1/outlook-email-sync`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
-        },
+        headers,
       })
       
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.details || 'Failed to sync emails')
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.error || error.details || 'Failed to sync emails')
       }
       
       const result = await response.json()
@@ -744,6 +945,59 @@ export default function Dashboard() {
       addToast({ type: 'error', title: 'Sync failed', message: err instanceof Error ? err.message : 'Unknown error' })
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleConnectEmailWebhook = async () => {
+    try {
+      setIsConnectingWebhook(true)
+      addToast({ type: 'info', title: 'Connecting emails...', message: 'Setting up Outlook webhook' })
+
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) throw new Error('Not authenticated')
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      }
+      if (currentOrg?.id) {
+        headers['X-Org-Id'] = currentOrg.id
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/setup-outlook-webhook`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ action: 'create' }),
+      })
+
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        console.error('Email webhook connection failed:', data)
+
+        // Show detailed error if available
+        let errorMsg = data.error || 'Failed to connect email webhook'
+        if (data.details?.error?.message) {
+          errorMsg = data.details.error.message
+        }
+        if (data.troubleshooting) {
+          console.error('Troubleshooting info:', data.troubleshooting)
+        }
+
+        throw new Error(errorMsg)
+      }
+
+      addToast({ type: 'success', title: 'Emails connected', message: 'Webhook subscription is active' })
+      fetchEmailWebhookStatus()
+    } catch (err) {
+      console.error('Error connecting email webhook:', err)
+      addToast({
+        type: 'error',
+        title: 'Connection failed',
+        message: err instanceof Error ? err.message : 'Unable to connect email webhook',
+      })
+    } finally {
+      setIsConnectingWebhook(false)
     }
   }
 
@@ -1039,7 +1293,8 @@ export default function Dashboard() {
 
             <div className="flex items-center gap-3 flex-wrap" data-tour="dashboard-quick-actions">
               <DatePicker selectedDate={selectedDate ?? new Date()} onDateChange={setSelectedDate} />
-              
+
+              {/* Email Status */}
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--color-surface-elevated)] border border-[var(--glass-border)]">
                 <div className={`w-2 h-2 rounded-full ${
                   emailWebhookStatus.state === 'connected' ? 'bg-emerald-400' :
@@ -1047,17 +1302,37 @@ export default function Dashboard() {
                   'bg-red-400'
                 }`} />
                 <span className="text-xs text-[var(--color-text-secondary)]">
-                  {emailWebhookStatus.state === 'connected' ? 'Emails connected' :
-                   emailWebhookStatus.state === 'checking' ? 'Checking...' :
-                   'Emails offline'}
+                  {emailWebhookStatus.state === 'connected' ? 'Email' :
+                   emailWebhookStatus.state === 'checking' ? 'Email...' :
+                   'Email offline'}
                 </span>
               </div>
 
-              <Button onClick={handleSyncEmailsAction} loading={isLoading} variant="secondary" size="sm">
+              {/* Dialpad Status */}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--color-surface-elevated)] border border-[var(--glass-border)]">
+                <div className={`w-2 h-2 rounded-full ${
+                  dialpadStatus.state === 'connected' ? 'bg-emerald-400' :
+                  dialpadStatus.state === 'checking' ? 'bg-amber-400 animate-pulse' :
+                  'bg-red-400'
+                }`} />
+                <span className="text-xs text-[var(--color-text-secondary)]">
+                  {dialpadStatus.state === 'connected' ? 'Dialpad' :
+                   dialpadStatus.state === 'checking' ? 'Dialpad...' :
+                   'Dialpad offline'}
+                </span>
+              </div>
+
+              {emailWebhookStatus.state !== 'connected' && emailWebhookStatus.state !== 'checking' && (
+                <Button onClick={handleConnectEmailWebhook} loading={isConnectingWebhook} variant="primary" size="sm">
+                  Connect Email
+                </Button>
+              )}
+
+              <Button onClick={handleSyncAll} loading={isLoading || isSyncingDialpad} variant="secondary" size="sm">
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                Sync
+                Sync All
               </Button>
 
               <Button onClick={handleRefresh} loading={isLoading} variant="ghost" size="sm">
@@ -1186,6 +1461,65 @@ export default function Dashboard() {
 
           {/* Right Column - Leads */}
           <div className="xl:col-span-1">
+            <div className="space-y-6">
+            <GlassCard className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-heading text-white">Today's Schedule</h2>
+                <Badge variant="default">{todayCleans.length} cleans</Badge>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-[var(--color-text-muted)] mb-2">Cleans Today</p>
+                  {todayCleans.length === 0 ? (
+                    <p className="text-xs text-[var(--color-text-muted)]">No cleans scheduled.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {todayCleans.slice(0, 5).map((job) => (
+                        <button
+                          key={job.id}
+                          type="button"
+                          onClick={() => window.dispatchEvent(new CustomEvent('open-job-modal', { detail: { occurrenceId: job.id } }))}
+                          className="w-full text-left p-2 rounded-lg bg-[var(--color-surface)] border border-[var(--glass-border)] hover:border-[var(--glass-border-hover)] transition-colors"
+                        >
+                          <p className="text-sm text-white">
+                            {job.series?.lead?.name || 'Customer'} · {job.series?.title || 'Job'}
+                          </p>
+                          <p className="text-xs text-[var(--color-text-muted)]">
+                            {new Date(job.start_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · {job.status}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-[var(--color-text-muted)] mb-2">Scheduled Notes</p>
+                  {todayScheduledNotes.length === 0 ? (
+                    <p className="text-xs text-[var(--color-text-muted)]">No callbacks scheduled.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {todayScheduledNotes.slice(0, 5).map((note) => (
+                        <button
+                          key={note.id}
+                          type="button"
+                          onClick={() => navigate(`/app/leads/${note.lead_id}?return=/app`)}
+                          className="w-full text-left p-2 rounded-lg bg-[var(--color-surface)] border border-[var(--glass-border)] hover:border-[var(--glass-border-hover)] transition-colors"
+                        >
+                          <p className="text-sm text-white">{note.lead?.name || 'Lead'}</p>
+                          <p className="text-xs text-cyan-300">
+                            {new Date(note.callback_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                          </p>
+                          <p className="text-xs text-[var(--color-text-muted)] truncate">{note.body}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </GlassCard>
+
             <GlassCard className="h-full max-h-[600px] flex flex-col" data-tour="dashboard-leads">
               <div className="p-4 border-b border-[var(--glass-border)] flex items-center justify-between">
                 <div>
@@ -1359,6 +1693,7 @@ export default function Dashboard() {
                 )}
               </div>
             </GlassCard>
+            </div>
           </div>
         </div>
 

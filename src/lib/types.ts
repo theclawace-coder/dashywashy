@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 export type OrgRole = 'owner' | 'admin' | 'manager' | 'staff' | 'cleaner'
+export type OrgPlan = 'free' | 'growth' | 'unlimited'
 
 export interface Organization {
   id: string
@@ -25,9 +26,10 @@ export interface Organization {
   default_deposit_pct: number
   logo_url: string | null
   primary_color: string | null
-  plan: 'free' | 'starter' | 'pro' | 'enterprise'
+  plan: OrgPlan
   max_users: number
   max_cleaners: number
+  use_workflow_automations?: boolean | null
   created_at: string
   updated_at: string
 }

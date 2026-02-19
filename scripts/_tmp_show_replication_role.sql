@@ -1,0 +1,1 @@
+SHOW session_replication_role;

@@ -17,7 +17,7 @@ export default function AuthCallbackPage() {
         const { data: { session } } = await supabase.auth.getSession()
 
         if (session) {
-          navigate('/', { replace: true })
+          navigate('/app', { replace: true })
         } else {
           // No session found -- wait a moment for the auth state change
           // then check again
@@ -30,7 +30,7 @@ export default function AuthCallbackPage() {
               if (newSession) {
                 clearTimeout(timeout)
                 subscription.unsubscribe()
-                navigate('/', { replace: true })
+                navigate('/app', { replace: true })
               }
             }
           )

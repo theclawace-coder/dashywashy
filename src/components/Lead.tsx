@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
 import { supabase, supabaseAnonKey, supabaseUrl, type DialpadEmail } from '../lib/supabase'
 import { startOfDay, endOfDay, addDays, isSameDay } from 'date-fns'
 import QuoteTool from './QuoteTool'
@@ -623,10 +624,19 @@ function isLeadEmail(subject: string | null): boolean {
 }
 
 export default function Lead() {
+  const navigate = useNavigate()
   const { currentOrg } = useAuth()
   const [leads, setLeads] = useState<LeadEmail[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedLead, setSelectedLead] = useState<LeadEmail | null>(null)
+
+  const openLeadProfile = (lead: LeadEmail) => {
+    if (lead.extractedLead?.id) {
+      navigate(`/app/leads/${lead.extractedLead.id}`)
+      return
+    }
+    setSelectedLead(lead)
+  }
   const [error, setError] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [expandedContacts, setExpandedContacts] = useState<Set<string>>(new Set())
@@ -960,7 +970,7 @@ export default function Lead() {
                 <tr
                   key={lead.id}
                   className="hover:bg-white/5 cursor-pointer transition-colors"
-                  onClick={() => setSelectedLead(lead)}
+                  onClick={() => openLeadProfile(lead)}
                 >
                   <td className="px-3 py-2 max-w-[120px]">
                     <div className="flex items-center gap-1">
@@ -1060,7 +1070,7 @@ export default function Lead() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
-                        setSelectedLead(lead)
+                        openLeadProfile(lead)
                       }}
                       className="flex items-center gap-1 px-2 py-1 text-xs bg-white/5 hover:bg-white/10 text-gray-300 rounded transition-colors"
                     >

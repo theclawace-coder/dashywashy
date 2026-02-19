@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
 
     const { data: invite, error: inviteError } = await supabaseAdmin
       .from('cleaner_invites')
-      .select('id, token, expires_at, used_at')
+      .select('id, token, expires_at, used_at, org_id')
       .eq('token', token)
       .maybeSingle()
 
@@ -83,7 +83,12 @@ Deno.serve(async (req) => {
       return jsonError('Invite expired', 410)
     }
 
+    if (!invite.org_id) {
+      return jsonError('Invite is missing organization context', 500)
+    }
+
     const insertPayload: Record<string, unknown> = {
+      org_id: invite.org_id,
       full_name: fullName,
     }
 

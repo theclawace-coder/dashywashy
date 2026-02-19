@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 import QuoteTool from './QuoteTool'
+import { Button } from './ui'
+import ManualWorkflowRunner from './automations/ManualWorkflowRunner'
 
 type LeadRecord = {
   id: string
@@ -119,6 +122,7 @@ function CleanerSearchSelect({
 }
 
 export default function JobModal() {
+  const { currentOrg } = useAuth()
   const [open, setOpen] = useState(false)
   const [occurrenceId, setOccurrenceId] = useState<string | null>(null)
   const [job, setJob] = useState<JobDetail | null>(null)
@@ -126,6 +130,7 @@ export default function JobModal() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [savingAssign, setSavingAssign] = useState(false)
+  const [showAutomationRunner, setShowAutomationRunner] = useState(false)
 
   const close = useCallback(() => {
     setOpen(false)
@@ -319,14 +324,19 @@ export default function JobModal() {
               </div>
             ) : null}
           </div>
-          <button
-            onClick={close}
-            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
-          >
-            <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setShowAutomationRunner(true)}>
+              Run Automation
+            </Button>
+            <button
+              onClick={close}
+              className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
+            >
+              <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div className="p-4 space-y-4">
@@ -361,10 +371,26 @@ export default function JobModal() {
           )}
         </div>
       </div>
+      {job && currentOrg && (
+        <ManualWorkflowRunner
+          open={showAutomationRunner}
+          onClose={() => setShowAutomationRunner(false)}
+          orgId={currentOrg.id}
+          entityType="booking"
+          entityId={job.occurrence.id}
+          entityLabel={job.series.title || job.lead?.name || 'Booking'}
+        />
+      )}
     </div>,
     document.body
   )
 }
+
+
+
+
+
+
 
 
 

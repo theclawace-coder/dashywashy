@@ -15,6 +15,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
 import { resolveOrgFromRequest, getOrgIntegration, corsHeaders, jsonResponse as _jr, jsonError } from '../_shared/org-resolver.ts'
+import { getPlanConfig, getUtcMonthBounds } from '../_shared/plan.ts'
 
 type RepeatType = 'none' | 'weekly' | 'fortnightly' | '3-weekly' | 'monthly' | '2-monthly'
 
@@ -553,6 +554,20 @@ function repeatTypeToRRule(repeatType: RepeatType): string | null {
   }
 }
 
+function getDaysInMonth(year: number, monthIndex: number) {
+  return new Date(year, monthIndex + 1, 0).getDate()
+}
+
+function addMonthsPreservingDay(date: Date, months: number, anchorDay: number) {
+  const next = new Date(date)
+  const targetMonthIndex = next.getMonth() + months
+  const targetYear = next.getFullYear() + Math.floor(targetMonthIndex / 12)
+  const normalizedMonth = ((targetMonthIndex % 12) + 12) % 12
+  const targetDay = Math.min(anchorDay, getDaysInMonth(targetYear, normalizedMonth))
+  next.setFullYear(targetYear, normalizedMonth, targetDay)
+  return next
+}
+
 // Generate occurrence dates from an RRULE
 function generateOccurrences(
   startDate: Date,
@@ -577,6 +592,7 @@ function generateOccurrences(
   const interval = parseInt(parts['INTERVAL'] || '1', 10)
 
   let currentDate = new Date(startDate)
+  const anchorDay = startDate.getDate()
   const endDate = untilDate || new Date(startDate.getTime() + 365 * 24 * 60 * 60 * 1000) // Default: 1 year
 
   while (dates.length < maxCount) {
@@ -584,9 +600,7 @@ function generateOccurrences(
     if (freq === 'WEEKLY') {
       currentDate = new Date(currentDate.getTime() + interval * 7 * 24 * 60 * 60 * 1000)
     } else if (freq === 'MONTHLY') {
-      const nextMonth = new Date(currentDate)
-      nextMonth.setMonth(nextMonth.getMonth() + interval)
-      currentDate = nextMonth
+      currentDate = addMonthsPreservingDay(currentDate, interval, anchorDay)
     } else {
       break // Unknown frequency
     }
@@ -682,6 +696,8 @@ Deno.serve(async (req) => {
   const maxOccurrences = payload.occurrenceCount || (rrule ? 52 : 1)
 
   try {
+    const planConfig = getPlanConfig(org.plan)
+
     // 1. Verify the lead exists
     const { data: lead, error: leadError } = await supabase
       .from('extracted_leads')
@@ -699,8 +715,42 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: quoteError || 'Quote not found or does not belong to this lead' }, 404)
     }
 
+    // Pre-calc occurrences so we can enforce plan limits before any inserts
+    const occurrenceDates = generateOccurrences(startDate, rrule, untilDate, maxOccurrences)
+
+    if (payload.testOnly !== true && planConfig.monthlyJobLimit !== null) {
+      const { start, end } = getUtcMonthBounds(new Date())
+      const { count, error: usageError } = await supabase
+        .from('booking_occurrences')
+        .select('id', { count: 'exact', head: true })
+        .eq('org_id', orgId)
+        .gte('created_at', start.toISOString())
+        .lt('created_at', end.toISOString())
+
+      if (usageError) {
+        console.error('Error checking monthly usage:', usageError)
+        return jsonResponse({ error: 'Unable to verify plan limits. Please try again.' }, 500)
+      }
+
+      const used = count ?? 0
+      const projected = used + occurrenceDates.length
+
+      if (projected > planConfig.monthlyJobLimit) {
+        return jsonResponse(
+          {
+            error: 'plan_limit_reached',
+            message: `Your ${planConfig.label} plan allows ${planConfig.monthlyJobLimit} scheduled jobs per month. You have ${used} already and tried to add ${occurrenceDates.length}.`,
+            limit: planConfig.monthlyJobLimit,
+            used,
+            requested: occurrenceDates.length,
+            plan: planConfig.id,
+          },
+          402
+        )
+      }
+    }
+
     if (payload.testOnly === true) {
-      const occurrenceDates = generateOccurrences(startDate, rrule, untilDate, maxOccurrences)
       const seriesPreview = {
         title,
         timezone,
@@ -760,9 +810,6 @@ Deno.serve(async (req) => {
       console.error('Error creating booking series:', seriesError)
       return jsonResponse({ error: seriesError?.message || 'Failed to create booking series' }, 500)
     }
-
-    // 3. Generate occurrence dates
-    const occurrenceDates = generateOccurrences(startDate, rrule, untilDate, maxOccurrences)
 
     // 4. Create quote variants for each occurrence (receipt + adjustable pricing)
     const startingVersion = await getNextQuoteVersion(supabase, baseQuote.id)

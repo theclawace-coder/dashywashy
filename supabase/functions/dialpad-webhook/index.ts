@@ -42,31 +42,52 @@ async function resolveOrgFromDialpadWebhook(supabase: ReturnType<typeof createCl
   return fallback?.org_id || null
 }
 
-function extractCall(payload: any) {
-  const call =
-    payload?.call ||
-    payload?.data?.call ||
-    payload?.data?.object?.call ||
-    payload?.data ||
-    {};
+function detectEventType(payload: any): string {
+  // Dialpad uses 'state' for call events (e.g. "hangup", "ringing", "connected")
+  if (payload?.state && payload?.call_id) {
+    return `call.${payload.state}`;
+  }
+  // SMS payloads have 'text' and 'from_number' but no 'state'
+  if (payload?.text !== undefined || payload?.from_number || payload?.to_number) {
+    return "sms.received";
+  }
+  // Fallback to any explicit event fields
+  return payload?.event_type || payload?.type || payload?.event || "unknown";
+}
 
+function extractCall(payload: any) {
+  // Dialpad call webhooks put fields at the top level
   return {
-    call_id: call?.call_id || call?.id || payload?.call_id || payload?.id || null,
-    direction: call?.direction || payload?.direction || null,
-    duration: call?.duration || call?.total_duration || payload?.duration || null,
-    external_number: call?.external_number || call?.external_number || null,
-    internal_number: call?.internal_number || call?.internal_number || null,
+    call_id: String(payload?.call_id || payload?.id || ""),
+    direction: payload?.direction || null,
+    // Dialpad sends duration in milliseconds - convert to seconds
+    duration: payload?.total_duration
+      ? Math.round(payload.total_duration / 1000)
+      : payload?.duration
+        ? Math.round(payload.duration / 1000)
+        : null,
+    external_number: payload?.external_number || payload?.contact?.phone || null,
+    internal_number: payload?.internal_number || payload?.target?.phone || null,
+    caller_name: payload?.contact?.name || null,
+    date_started: payload?.date_started ? new Date(payload.date_started).toISOString() : null,
+    date_ended: payload?.date_ended ? new Date(payload.date_ended).toISOString() : null,
   };
 }
 
 function extractSms(payload: any) {
-  const sms = payload?.sms || payload?.data?.sms || payload?.data || {};
+  // Dialpad SMS webhooks put fields at the top level
+  const toNumbers = payload?.to_number || [];
   return {
-    message_id: sms?.message_id || sms?.id || payload?.message_id || payload?.id || null,
-    direction: sms?.direction || payload?.direction || null,
-    content: sms?.text || sms?.content || payload?.content || null,
-    external_number: sms?.external_number || sms?.from_number || sms?.to_number || null,
-    internal_number: sms?.internal_number || sms?.user_id || null,
+    message_id: String(payload?.id || payload?.message_id || ""),
+    direction: payload?.direction || null,
+    content: payload?.text || payload?.text_content || null,
+    external_number: payload?.direction === "outbound"
+      ? (Array.isArray(toNumbers) ? toNumbers[0] : toNumbers) || payload?.contact?.phone || null
+      : payload?.from_number || payload?.contact?.phone || null,
+    internal_number: payload?.direction === "outbound"
+      ? payload?.from_number || payload?.admins?.[0]?.phone || null
+      : (Array.isArray(toNumbers) ? toNumbers[0] : toNumbers) || payload?.admins?.[0]?.phone || null,
+    sender_name: payload?.contact?.name || null,
   };
 }
 
@@ -92,28 +113,34 @@ Deno.serve(async (req) => {
     return jsonResponse({ success: false, error: "Invalid JSON body" }, 400);
   }
 
-  const eventType =
-    payload?.event_type || payload?.type || payload?.event || payload?.eventType || "unknown";
+  const eventType = detectEventType(payload);
 
   const orgId = await resolveOrgFromDialpadWebhook(supabase, payload);
 
   try {
-    await supabase.from("webhook_logs").insert({ payload, event_type: eventType, ...(orgId ? { org_id: orgId } : {}) });
+    // webhook_logs schema: id, payload, created_at, org_id (no event_type/source columns)
+    await supabase.from("webhook_logs").insert({
+      payload: { ...payload, _event_type: eventType, _source: "dialpad" },
+      ...(orgId ? { org_id: orgId } : {}),
+    });
   } catch (error) {
     console.error("Failed to store webhook log", error);
   }
 
   try {
-    if (String(eventType).startsWith("call")) {
+    if (eventType.startsWith("call")) {
       const call = extractCall(payload);
       if (call.call_id) {
+        // dialpad_calls schema: id, call_id, direction, duration, created_at, transcript, summary,
+        // transcript_fetched_at, external_number, internal_number, payload, org_id
         await supabase.from("dialpad_calls").upsert(
           {
             call_id: call.call_id,
-            direction: call.direction || "outbound",
-            duration: Number(call.duration || 0),
+            direction: call.direction || "inbound",
+            duration: call.duration || 0,
             external_number: call.external_number,
             internal_number: call.internal_number,
+            payload,
             ...(orgId ? { org_id: orgId } : {}),
           },
           { onConflict: "call_id" }
@@ -121,13 +148,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (String(eventType).startsWith("sms")) {
+    if (eventType.startsWith("sms")) {
       const sms = extractSms(payload);
       if (sms.message_id) {
         await supabase.from("dialpad_sms").upsert(
           {
             message_id: sms.message_id,
-            direction: sms.direction || "outbound",
+            direction: sms.direction || "inbound",
             content: sms.content,
             external_number: sms.external_number,
             internal_number: sms.internal_number,

@@ -4,9 +4,17 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#08090c" />
-    <meta name="color-scheme" content="dark" />
-    <title>Operations Hub — Little Fish</title>
+    <meta name="theme-color" content="#f5f7fb" />
+    <meta name="color-scheme" content="light dark" />
+    <title>CRMroo - The All-in-One CRM Built for Cleaning Businesses</title>
+    <meta name="description" content="CRMroo is the all-in-one CRM for cleaning businesses. Pipeline, scheduling, dispatch, Dialpad calling, Outlook email, AI agent, memberships, and Stripe payments in one platform. Free for the first 200 teams." />
+    <meta name="keywords" content="cleaning crm, crm for cleaners, maid service software, membership crm, cleaning business software, dispatch calendar, dialpad integration, facebook lead forms, ai crm, agentic ai, cleaning dispatch, cleaner management, cleaning scheduling software" />
+    <meta property="og:title" content="CRMroo - The Cleaning CRM That Grows Your Business" />
+    <meta property="og:description" content="Pipeline, scheduling, dispatch, AI agent, memberships, and payments in one platform built for cleaning teams. Free for the first 200 teams." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/vite.svg" />
+    <meta property="og:url" content="https://crmroo.com" />
+    <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -14,14 +22,31 @@
       /* Critical CSS for instant load feel */
       *,*::before,*::after{box-sizing:border-box}
       body{margin:0;background:#08090c;color:#f4f5f7;font-family:'Inter',-apple-system,BlinkMacSystemFont,system-ui,sans-serif}
+      html.theme-day body{background:#f5f7fb;color:#0f172a}
       #root{min-height:100vh}
       /* Preloader skeleton */
       .preloader{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#08090c;z-index:9999}
-      .preloader-spinner{width:32px;height:32px;border:3px solid rgba(45,212,191,0.2);border-top-color:#2dd4bf;border-radius:50%;animation:spin 0.8s linear infinite}
+      html.theme-day .preloader{background:#f5f7fb}
+      .preloader-spinner{width:32px;height:32px;border:3px solid rgba(14,165,164,0.2);border-top-color:#0ea5a4;border-radius:50%;animation:spin 0.8s linear infinite}
       @keyframes spin{to{transform:rotate(360deg)}}
     </style>
   </head>
   <body>
+    <script>
+      (function () {
+        var path = window.location.pathname.replace(/\/+$/, '') || '/'
+        var isMarketing =
+          path === '/' ||
+          path.indexOf('/features') === 0 ||
+          path.indexOf('/pricing') === 0 ||
+          path.indexOf('/integrations') === 0 ||
+          path.indexOf('/ai-agent') === 0 ||
+          path.indexOf('/inside') === 0 ||
+          path.indexOf('/memberships') === 0 ||
+          path.indexOf('/faq') === 0
+        if (isMarketing) document.documentElement.classList.add('theme-day')
+      })()
+    </script>
     <div id="root">
       <!-- Preloader shown until React hydrates -->
       <div class="preloader">

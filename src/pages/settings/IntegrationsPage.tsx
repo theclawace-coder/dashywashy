@@ -16,6 +16,11 @@ interface ProviderConfig {
   fields: { key: string; label: string; placeholder: string; type?: string }[]
 }
 
+const REQUIRED_FIELDS: Record<string, string[]> = {
+  dialpad: ['api_key'],
+  outlook: ['tenant_id', 'client_id', 'client_secret', 'user_email'],
+}
+
 const PROVIDERS: ProviderConfig[] = [
   {
     provider: 'stripe',
@@ -85,6 +90,10 @@ export default function IntegrationsPage() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [activating, setActivating] = useState<string | null>(null)
+  const [activationStatus, setActivationStatus] = useState<
+    Record<string, { type: 'success' | 'error'; message: string }>
+  >({})
 
   const fetchIntegrations = useCallback(async () => {
     if (!currentOrg) return
@@ -134,6 +143,96 @@ export default function IntegrationsPage() {
     setEnabledState((prev) => ({ ...prev, [provider]: !prev[provider] }))
   }
 
+  const hasRequiredFields = (provider: string) => {
+    const required = REQUIRED_FIELDS[provider] || []
+    if (required.length === 0) return true
+    const config = formData[provider] || {}
+    return required.every((key) => (config[key] || '').trim())
+  }
+
+  const formatDate = (value?: string) => {
+    if (!value) return ''
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return value
+    return date.toLocaleString()
+  }
+
+  const getStatusLine = (provider: string, config: Record<string, string>) => {
+    if (provider === 'dialpad') {
+      if (config?.dialpad_webhook_id) {
+        const checked = formatDate(config?.dialpad_webhook_last_checked_at)
+        return checked ? `Webhook active - Last checked ${checked}` : 'Webhook active'
+      }
+      if (config?.api_key) {
+        return 'Webhook not activated yet'
+      }
+    }
+    if (provider === 'outlook') {
+      if (config?.outlook_subscription_expires_at) {
+        return `Subscription active until ${formatDate(config?.outlook_subscription_expires_at)}`
+      }
+      if (config?.client_id || config?.tenant_id) {
+        return 'Subscription not activated yet'
+      }
+    }
+    return ''
+  }
+
+  const activateIntegration = async (provider: string) => {
+    if (!currentOrg) return
+    setActivating(provider)
+    setActivationStatus((prev) => ({ ...prev, [provider]: { type: 'success', message: '' } }))
+
+    try {
+      let fnName = ''
+      let body: Record<string, unknown> = {}
+
+      if (provider === 'dialpad') {
+        fnName = 'setup-dialpad-webhook'
+        body = { action: 'ensure' }
+      } else if (provider === 'outlook') {
+        fnName = 'setup-outlook-webhook'
+        body = { action: 'create' }
+      } else {
+        throw new Error('Unsupported integration')
+      }
+
+      const headers: Record<string, string> = {}
+      if (currentOrg?.id) {
+        headers['X-Org-Id'] = currentOrg.id
+      }
+
+      const { data, error } = await supabase.functions.invoke(fnName, { body, headers })
+      if (error) throw error
+      if (data?.error) throw new Error(data.error)
+
+      const message =
+        provider === 'dialpad'
+          ? data?.action === 'created'
+            ? 'Webhook created'
+            : 'Webhook already active'
+          : data?.action === 'created'
+            ? 'Subscription created'
+            : data?.action === 'renewed'
+              ? 'Subscription renewed'
+              : 'Subscription checked'
+
+      setActivationStatus((prev) => ({
+        ...prev,
+        [provider]: { type: 'success', message },
+      }))
+      await fetchIntegrations()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Activation failed'
+      setActivationStatus((prev) => ({
+        ...prev,
+        [provider]: { type: 'error', message },
+      }))
+    } finally {
+      setActivating(null)
+    }
+  }
+
   const handleSave = async (provider: string) => {
     if (!currentOrg) return
     setSaving(provider)
@@ -142,6 +241,18 @@ export default function IntegrationsPage() {
 
     const config = formData[provider] || {}
     const enabled = enabledState[provider] ?? false
+
+    // Debug: log what we're about to save
+    console.log(`[IntegrationsPage] Saving ${provider}:`, {
+      config: Object.keys(config).reduce((acc, key) => {
+        acc[key] = key.includes('secret') || key.includes('key')
+          ? config[key]?.substring(0, 8) + '...'
+          : config[key]
+        return acc
+      }, {} as Record<string, string>),
+      enabled,
+      org_id: currentOrg.id,
+    })
 
     const { error: err } = await supabase
       .from('organization_integrations')
@@ -156,8 +267,10 @@ export default function IntegrationsPage() {
       )
 
     if (err) {
+      console.error(`[IntegrationsPage] Save error for ${provider}:`, err)
       setError(err.message)
     } else {
+      console.log(`[IntegrationsPage] Save successful for ${provider}`)
       setSuccess(provider)
       setTimeout(() => setSuccess(null), 3000)
       fetchIntegrations()
@@ -195,7 +308,13 @@ export default function IntegrationsPage() {
             const isEnabled = enabledState[p.provider] ?? false
             const isSaving = saving === p.provider
             const isSuccess = success === p.provider
-            const hasConfig = Object.values(formData[p.provider] || {}).some((v) => v?.trim())
+            const isActivating = activating === p.provider
+            const hasConfig = Object.values(formData[p.provider] || {}).some((v) =>
+              typeof v === 'string' ? v.trim() : v != null
+            )
+            const canActivate = isEnabled && hasConfig && hasRequiredFields(p.provider)
+            const statusLine = getStatusLine(p.provider, formData[p.provider] || {})
+            const activation = activationStatus[p.provider]
 
             return (
               <GlassCard key={p.provider} className="overflow-hidden">
@@ -252,12 +371,40 @@ export default function IntegrationsPage() {
                       />
                     ))}
 
+                    {statusLine && (
+                      <p className="text-xs text-[var(--color-text-muted)]">{statusLine}</p>
+                    )}
+
+                    {activation?.message && (
+                      <p className={`text-xs ${activation.type === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
+                        {activation.message}
+                      </p>
+                    )}
+
                     <div className="flex items-center justify-between pt-2">
                       {isSuccess && <p className="text-xs text-emerald-400">Saved</p>}
                       {!isSuccess && <div />}
-                      <Button variant="primary" size="sm" onClick={() => handleSave(p.provider)} loading={isSaving}>
-                        Save
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        {(p.provider === 'dialpad' || p.provider === 'outlook') && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => activateIntegration(p.provider)}
+                            loading={isActivating}
+                            disabled={!canActivate}
+                          >
+                            Test & Activate
+                          </Button>
+                        )}
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => handleSave(p.provider)}
+                          loading={isSaving}
+                        >
+                          Save
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}

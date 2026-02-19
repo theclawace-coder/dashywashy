@@ -5,9 +5,11 @@
  * Auth is handled by AuthProvider (src/lib/auth.tsx).
  */
 
-import { useState, lazy, Suspense } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, Outlet, useLocation, useSearchParams } from 'react-router-dom'
 import { useAuth } from './lib/auth'
+import { isMarketingPath } from './lib/marketing'
+import { isAiEnabled } from './lib/plans'
 
 // Page-level auth screens
 import LoginPage from './pages/auth/LoginPage'
@@ -31,26 +33,37 @@ import MarketingLoopNotifier from './components/MarketingLoopNotifier'
 import ManualTodoPopup from './components/ManualTodoPopup'
 import UserMenu from './components/UserMenu'
 import { GlassCard } from './components/ui'
+import MarketingLayout from './components/marketing/MarketingLayout'
+import MarketingHomePage from './pages/marketing/MarketingHomePage'
+import MarketingFeaturesPage from './pages/marketing/MarketingFeaturesPage'
+import MarketingPricingPage from './pages/marketing/MarketingPricingPage'
+import MarketingIntegrationsPage from './pages/marketing/MarketingIntegrationsPage'
+import MarketingAIAgentPage from './pages/marketing/MarketingAIAgentPage'
+import MarketingInsidePage from './pages/marketing/MarketingInsidePage'
+import MarketingMembershipsPage from './pages/marketing/MarketingMembershipsPage'
+import MarketingFaqPage from './pages/marketing/MarketingFaqPage'
 
 const QuotePublicView = lazy(() => import('./components/QuotePublicView'))
 const SalesFunnel = lazy(() => import('./components/SalesFunnel'))
 const Calendar = lazy(() => import('./components/Calendar'))
-const Dispatch = lazy(() => import('./components/Dispatch'))
+const Dispatch = lazy(() => import('./features/dispatch/DispatchPageV2'))
 const Cleaners = lazy(() => import('./components/Cleaners'))
 const CleanersPayout = lazy(() => import('./components/CleanersPayout'))
 const CompletedJobs = lazy(() => import('./components/CompletedJobs'))
 const QuotesSent = lazy(() => import('./components/QuotesSent'))
 const RepeatCustomers = lazy(() => import('./components/RepeatCustomers'))
+const ContactsPage = lazy(() => import('./components/ContactsPage'))
 const TodoPage = lazy(() => import('./components/TodoPage'))
-const MarketingLoop = lazy(() => import('./components/MarketingLoop'))
 const BusinessAnalytics = lazy(() => import('./components/BusinessAnalytics'))
 const WebhookDebug = lazy(() => import('./components/WebhookDebug'))
+const LeadProfilePage = lazy(() => import('./pages/leads/LeadProfilePage'))
 
 const OrgSettingsPage = lazy(() => import('./pages/settings/OrgSettingsPage'))
 const TeamPage = lazy(() => import('./pages/settings/TeamPage'))
 const IntegrationsPage = lazy(() => import('./pages/settings/IntegrationsPage'))
-const AutomationSettingsPage = lazy(() => import('./pages/settings/AutomationSettingsPage'))
-const WorkflowListPage = lazy(() => import('./pages/settings/WorkflowListPage'))
+const DiagnosticsPage = lazy(() => import('./pages/settings/DiagnosticsPage'))
+const CommunicationsDebugPage = lazy(() => import('./pages/settings/CommunicationsDebugPage'))
+const AutomationsPage = lazy(() => import('./pages/settings/AutomationsPage'))
 const WorkflowBuilderPage = lazy(() => import('./pages/settings/WorkflowBuilderPage'))
 const BillingPage = lazy(() => import('./pages/settings/BillingPage'))
 const CleanerInvitePage = lazy(() => import('./pages/cleaners/CleanerInvitePage'))
@@ -72,13 +85,34 @@ function withSuspense(node: React.ReactNode, fallback?: React.ReactNode) {
 }
 
 // ---------------------------------------------------------------------------
+// Theme Controller - toggles day mode for marketing pages
+// ---------------------------------------------------------------------------
+
+function ThemeController() {
+  const location = useLocation()
+
+  useEffect(() => {
+    const isMarketing = isMarketingPath(location.pathname)
+    document.documentElement.classList.toggle('theme-day', isMarketing)
+    const themeMeta = document.querySelector('meta[name="theme-color"]')
+    themeMeta?.setAttribute('content', isMarketing ? '#f5f7fb' : '#08090c')
+  }, [location.pathname])
+
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Breadcrumbs helper
 // ---------------------------------------------------------------------------
 
 function getBreadcrumbs(path: string): Array<{ label: string; href?: string }> {
   const normalizedPath = path.replace(/\/+$/, '') || '/'
+  const appPrefix = '/app'
+  const appPath = normalizedPath.startsWith(appPrefix)
+    ? normalizedPath.slice(appPrefix.length) || '/'
+    : normalizedPath
 
-  if (normalizedPath === '/') {
+  if (appPath === '/') {
     return [{ label: 'Dashboard' }]
   }
 
@@ -92,25 +126,34 @@ function getBreadcrumbs(path: string): Array<{ label: string; href?: string }> {
     '/completed-jobs': 'Completed Jobs',
     '/quotes-sent': 'Quotes',
     '/repeat-customers': 'Repeat Customers',
+    '/contacts': 'Contacts',
     '/todo': 'Todo',
-    '/marketing-loop': 'Marketing Loop',
+    '/marketing-loop': 'Automations',
     '/analytics': 'Analytics',
+    '/automations': 'Automations',
     '/settings': 'Settings',
     '/settings/team': 'Team',
     '/settings/integrations': 'Integrations',
+    '/settings/diagnostics': 'Diagnostics',
+    '/settings/communications-debug': 'Communications Debug',
     '/settings/automations': 'Automations',
-    '/settings/workflows': 'Workflows',
+    '/settings/workflows': 'Automations',
     '/settings/billing': 'Billing',
   }
 
   const breadcrumbs: Array<{ label: string; href?: string }> = [
-    { label: 'Home', href: '/' },
+    { label: 'Home', href: '/app' },
   ]
 
-  if (pathMap[normalizedPath]) {
-    breadcrumbs.push({ label: pathMap[normalizedPath] })
-  } else if (normalizedPath !== '/') {
-    const pathName = normalizedPath.split('/').pop() || ''
+  if (appPath.startsWith('/leads/')) {
+    breadcrumbs.push({ label: 'Lead Profile' })
+    return breadcrumbs
+  }
+
+  if (pathMap[appPath]) {
+    breadcrumbs.push({ label: pathMap[appPath] })
+  } else if (appPath !== '/') {
+    const pathName = appPath.split('/').pop() || ''
     breadcrumbs.push({
       label: pathName.charAt(0).toUpperCase() + pathName.slice(1).replace(/-/g, ' '),
     })
@@ -285,8 +328,10 @@ function RequireAuth() {
 // ---------------------------------------------------------------------------
 
 function AppLayout() {
+  const { currentOrg } = useAuth()
   const location = useLocation()
   const breadcrumbs = getBreadcrumbs(location.pathname)
+  const showAiAgent = currentOrg ? isAiEnabled(currentOrg.plan) : false
 
   return (
     <div className="app-shell">
@@ -306,7 +351,7 @@ function AppLayout() {
       <Outlet />
 
       {withSuspense(<JobModal />, null)}
-      {withSuspense(<AiChatPanel />, null)}
+      {showAiAgent ? withSuspense(<AiChatPanel />, null) : null}
     </div>
   )
 }
@@ -355,55 +400,75 @@ function DashboardPage() {
 
 function App() {
   return (
-    <Routes>
-      {/* Public routes */}
-      <Route path="/auth/login" element={<LoginPage />} />
-      <Route path="/auth/signup" element={<SignupPage />} />
-      <Route path="/auth/invite/:token" element={<AcceptInvitePage />} />
-      <Route path="/auth/callback" element={<AuthCallbackPage />} />
-      <Route path="/cleaners/invite/:token" element={withSuspense(<CleanerInvitePage />)} />
-      <Route path="/payment-success" element={<PaymentStatus success={true} />} />
-      <Route path="/payment-cancel" element={<PaymentStatus success={false} />} />
-      <Route path="/quote" element={<QuotePublicWrapper />} />
+    <>
+      <ThemeController />
+      <Routes>
+        {/* Marketing routes */}
+        <Route element={<MarketingLayout />}>
+          <Route path="/" element={<MarketingHomePage />} />
+          <Route path="/features" element={<MarketingFeaturesPage />} />
+          <Route path="/pricing" element={<MarketingPricingPage />} />
+          <Route path="/integrations" element={<MarketingIntegrationsPage />} />
+          <Route path="/ai-agent" element={<MarketingAIAgentPage />} />
+          <Route path="/inside" element={<MarketingInsidePage />} />
+          <Route path="/memberships" element={<MarketingMembershipsPage />} />
+          <Route path="/faq" element={<MarketingFaqPage />} />
+        </Route>
 
-      {/* Onboarding (needs auth but not org) */}
-      <Route
-        path="/onboarding"
-        element={
-          <RequireUser>
-            <OnboardingPage />
-          </RequireUser>
-        }
-      />
+        {/* Public routes */}
+        <Route path="/auth/login" element={<LoginPage />} />
+        <Route path="/auth/signup" element={<SignupPage />} />
+        <Route path="/auth/invite/:token" element={<AcceptInvitePage />} />
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
+        <Route path="/cleaners/invite/:token" element={withSuspense(<CleanerInvitePage />)} />
+        <Route path="/payment-success" element={<PaymentStatus success={true} />} />
+        <Route path="/payment-cancel" element={<PaymentStatus success={false} />} />
+        <Route path="/quote" element={<QuotePublicWrapper />} />
 
-      {/* Protected routes (need auth + org) */}
-      <Route element={<RequireAuth />}>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/salesfunnel" element={withSuspense(<SalesFunnel />)} />
-        <Route path="/calendar" element={withSuspense(<Calendar />)} />
-        <Route path="/dispatch" element={withSuspense(<Dispatch />)} />
-        <Route path="/cleaners" element={withSuspense(<Cleaners />)} />
-        <Route path="/cleaners-payout" element={withSuspense(<CleanersPayout />)} />
-        <Route path="/completed" element={withSuspense(<CompletedJobs />)} />
-        <Route path="/completed-jobs" element={withSuspense(<CompletedJobs />)} />
-        <Route path="/quotes-sent" element={withSuspense(<QuotesSent />)} />
-        <Route path="/repeat-customers" element={withSuspense(<RepeatCustomers />)} />
-        <Route path="/todo" element={withSuspense(<TodoPage />)} />
-        <Route path="/marketing-loop" element={withSuspense(<MarketingLoop />)} />
-        <Route path="/analytics" element={withSuspense(<BusinessAnalytics />)} />
-        <Route path="/settings" element={<SettingsLayout>{withSuspense(<OrgSettingsPage />)}</SettingsLayout>} />
-        <Route path="/settings/team" element={<SettingsLayout>{withSuspense(<TeamPage />)}</SettingsLayout>} />
-        <Route path="/settings/integrations" element={<SettingsLayout>{withSuspense(<IntegrationsPage />)}</SettingsLayout>} />
-        <Route path="/settings/automations" element={<SettingsLayout>{withSuspense(<AutomationSettingsPage />)}</SettingsLayout>} />
-        <Route path="/settings/workflows" element={<SettingsLayout>{withSuspense(<WorkflowListPage />)}</SettingsLayout>} />
-        <Route path="/settings/workflows/new" element={<SettingsLayout>{withSuspense(<WorkflowBuilderPage />)}</SettingsLayout>} />
-        <Route path="/settings/workflows/:id" element={<SettingsLayout>{withSuspense(<WorkflowBuilderPage />)}</SettingsLayout>} />
-        <Route path="/settings/billing" element={<SettingsLayout>{withSuspense(<BillingPage />)}</SettingsLayout>} />
-      </Route>
+        {/* Onboarding (needs auth but not org) */}
+        <Route
+          path="/onboarding"
+          element={
+            <RequireUser>
+              <OnboardingPage />
+            </RequireUser>
+          }
+        />
 
-      {/* Catch-all */}
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        {/* Protected routes (need auth + org) */}
+        <Route path="/app" element={<RequireAuth />}>
+          <Route index element={<DashboardPage />} />
+          <Route path="salesfunnel" element={withSuspense(<SalesFunnel />)} />
+          <Route path="calendar" element={withSuspense(<Calendar />)} />
+          <Route path="dispatch" element={withSuspense(<Dispatch />)} />
+          <Route path="cleaners" element={withSuspense(<Cleaners />)} />
+          <Route path="cleaners-payout" element={withSuspense(<CleanersPayout />)} />
+          <Route path="completed" element={withSuspense(<CompletedJobs />)} />
+          <Route path="completed-jobs" element={withSuspense(<CompletedJobs />)} />
+          <Route path="quotes-sent" element={withSuspense(<QuotesSent />)} />
+          <Route path="repeat-customers" element={withSuspense(<RepeatCustomers />)} />
+          <Route path="contacts" element={withSuspense(<ContactsPage />)} />
+          <Route path="todo" element={withSuspense(<TodoPage />)} />
+          <Route path="marketing-loop" element={<Navigate to="/app/automations?view=runs&preset=marketing_loop" replace />} />
+          <Route path="analytics" element={withSuspense(<BusinessAnalytics />)} />
+          <Route path="automations" element={withSuspense(<AutomationsPage />)} />
+          <Route path="leads/:leadId" element={withSuspense(<LeadProfilePage />)} />
+          <Route path="settings" element={<SettingsLayout>{withSuspense(<OrgSettingsPage />)}</SettingsLayout>} />
+          <Route path="settings/team" element={<SettingsLayout>{withSuspense(<TeamPage />)}</SettingsLayout>} />
+          <Route path="settings/integrations" element={<SettingsLayout>{withSuspense(<IntegrationsPage />)}</SettingsLayout>} />
+          <Route path="settings/diagnostics" element={<SettingsLayout>{withSuspense(<DiagnosticsPage />)}</SettingsLayout>} />
+          <Route path="settings/communications-debug" element={<SettingsLayout>{withSuspense(<CommunicationsDebugPage />)}</SettingsLayout>} />
+          <Route path="settings/automations" element={<Navigate to="/app/automations" replace />} />
+          <Route path="settings/workflows" element={<Navigate to="/app/automations#custom-workflows" replace />} />
+          <Route path="settings/workflows/new" element={<SettingsLayout>{withSuspense(<WorkflowBuilderPage />)}</SettingsLayout>} />
+          <Route path="settings/workflows/:id" element={<SettingsLayout>{withSuspense(<WorkflowBuilderPage />)}</SettingsLayout>} />
+          <Route path="settings/billing" element={<SettingsLayout>{withSuspense(<BillingPage />)}</SettingsLayout>} />
+        </Route>
+
+        {/* Catch-all */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   )
 }
 

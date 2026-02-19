@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase, supabaseUrl, supabaseAnonKey } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
+import { getMonthlyJobLimit, getPlanLabel, getUtcMonthBounds } from '../lib/plans'
 
 type RepeatType = 'none' | 'weekly' | 'fortnightly' | '3-weekly' | 'monthly' | '2-monthly'
 
@@ -122,6 +124,20 @@ function repeatTypeToRRule(repeatType: RepeatType): string | null {
   }
 }
 
+function getDaysInMonth(year: number, monthIndex: number) {
+  return new Date(year, monthIndex + 1, 0).getDate()
+}
+
+function addMonthsPreservingDay(date: Date, months: number, anchorDay: number) {
+  const next = new Date(date)
+  const targetMonthIndex = next.getMonth() + months
+  const targetYear = next.getFullYear() + Math.floor(targetMonthIndex / 12)
+  const normalizedMonth = ((targetMonthIndex % 12) + 12) % 12
+  const targetDay = Math.min(anchorDay, getDaysInMonth(targetYear, normalizedMonth))
+  next.setFullYear(targetYear, normalizedMonth, targetDay)
+  return next
+}
+
 function generateOccurrences(startDate: Date, rrule: string | null, untilDate: Date | null, maxCount: number): Date[] {
   const dates: Date[] = [new Date(startDate)]
 
@@ -136,15 +152,14 @@ function generateOccurrences(startDate: Date, rrule: string | null, untilDate: D
   const freq = parts['FREQ']
   const interval = parseInt(parts['INTERVAL'] || '1', 10)
   let currentDate = new Date(startDate)
+  const anchorDay = startDate.getDate()
   const endDate = untilDate || new Date(startDate.getTime() + 365 * 24 * 60 * 60 * 1000) // default: 1 year
 
   while (dates.length < maxCount) {
     if (freq === 'WEEKLY') {
       currentDate = new Date(currentDate.getTime() + interval * 7 * 24 * 60 * 60 * 1000)
     } else if (freq === 'MONTHLY') {
-      const nextMonth = new Date(currentDate)
-      nextMonth.setMonth(nextMonth.getMonth() + interval)
-      currentDate = nextMonth
+      currentDate = addMonthsPreservingDay(currentDate, interval, anchorDay)
     } else {
       break
     }
@@ -278,7 +293,11 @@ async function createBookingViaEdge(payload: CreateBookingPayload) {
       throw new Error(error.message || 'Edge function failed')
     }
     if (data?.error) {
-      throw new Error(data.error)
+      const err = new Error(data.message || data.error)
+      if (data.error === 'plan_limit_reached') {
+        ;(err as any).code = 'plan_limit_reached'
+      }
+      throw err
     }
     if (!data?.series?.id) {
       throw new Error('Edge function did not return a booking id')
@@ -315,7 +334,11 @@ async function createBookingViaEdge(payload: CreateBookingPayload) {
       const responseData = await response.json().catch(() => ({}))
       
       if (!response.ok || responseData?.error) {
-        throw new Error(responseData?.error || `Edge function failed (${response.status})`)
+        const err = new Error(responseData?.message || responseData?.error || `Edge function failed (${response.status})`)
+        if (responseData?.error === 'plan_limit_reached') {
+          ;(err as any).code = 'plan_limit_reached'
+        }
+        throw err
       }
       
       if (!responseData?.series?.id) {
@@ -428,8 +451,10 @@ async function createBookingDirect(payload: CreateBookingPayload) {
 }
 
 export default function BookingModal({ lead, onClose, onSuccess, onSkip }: BookingModalProps) {
+  const { currentOrg } = useAuth()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [limitReached, setLimitReached] = useState(false)
   const [showSuccess, setShowSuccess] = useState(false)
   const [successData, setSuccessData] = useState<{ occurrencesCreated: number; startDate: string; seriesId?: string } | null>(null)
   
@@ -504,6 +529,7 @@ export default function BookingModal({ lead, onClose, onSuccess, onSkip }: Booki
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
+    setLimitReached(false)
     setIsSubmitting(true)
 
     try {
@@ -531,6 +557,37 @@ export default function BookingModal({ lead, onClose, onSuccess, onSkip }: Booki
           payload.untilDate = endDate
         } else if (endType === 'count') {
           payload.occurrenceCount = occurrenceCount
+        }
+      }
+
+      const rrule = repeatTypeToRRule(payload.repeatType)
+      const untilDate = payload.untilDate ? new Date(payload.untilDate) : null
+      const maxOccurrences = payload.occurrenceCount || (rrule ? 52 : 1)
+      const occurrenceDates = generateOccurrences(startsAt, rrule, untilDate, maxOccurrences)
+
+      if (currentOrg) {
+        const planLimit = getMonthlyJobLimit(currentOrg.plan)
+        if (planLimit !== null) {
+          const { start, end } = getUtcMonthBounds(new Date())
+          const { count, error: usageError } = await supabase
+            .from('booking_occurrences')
+            .select('id', { count: 'exact', head: true })
+            .eq('org_id', currentOrg.id)
+            .gte('created_at', start.toISOString())
+            .lt('created_at', end.toISOString())
+
+          if (usageError) {
+            throw new Error('Unable to verify plan limits. Please try again.')
+          }
+
+          const used = count ?? 0
+          if (used + occurrenceDates.length > planLimit) {
+            setLimitReached(true)
+            const planLabel = getPlanLabel(currentOrg.plan)
+            setError(`Your ${planLabel} plan allows ${planLimit} scheduled jobs per month. You have ${used} already and tried to add ${occurrenceDates.length}.`)
+            setIsSubmitting(false)
+            return
+          }
         }
       }
 
@@ -575,6 +632,9 @@ export default function BookingModal({ lead, onClose, onSuccess, onSkip }: Booki
       }, 3000)
     } catch (err) {
       console.error('Error creating booking:', err)
+      if (err instanceof Error && (err as any).code === 'plan_limit_reached') {
+        setLimitReached(true)
+      }
       setError(err instanceof Error ? err.message : 'Failed to create booking')
     } finally {
       setIsSubmitting(false)
@@ -813,7 +873,18 @@ export default function BookingModal({ lead, onClose, onSuccess, onSkip }: Booki
           {/* Error */}
           {error && (
             <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-              {error}
+              <div>{error}</div>
+              {limitReached && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.href = '/app/settings/billing'
+                  }}
+                  className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-emerald-300 hover:text-emerald-200 transition-colors"
+                >
+                  Upgrade plan →
+                </button>
+              )}
             </div>
           )}
         </form>

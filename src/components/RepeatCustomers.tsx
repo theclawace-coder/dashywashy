@@ -17,14 +17,20 @@ type SeriesSummary = {
   rrule: string | null
   status: string
   monthlyRevenue: number
+  monthlyCleanerPay: number
+  serviceAddress: string | null
 }
 
 type RepeatCustomer = {
   lead: Lead
   seriesCount: number
   monthlyRevenue: number
+  monthlyCleanerPay: number
+  annualRevenueCurrentYear: number
+  annualRevenuePreviousYear: number
   firstBooking?: string
   lastBooking?: string
+  cleanAddresses: string[]
   bookingSeries: SeriesSummary[]
 }
 
@@ -32,7 +38,22 @@ type QuoteRecord = {
   id: string
   lead_id: string | null
   total_inc_gst: number | null
+  cleaner_pay?: number | null
+  address?: string | null
   created_at?: string | null
+}
+
+type BookingSeriesRecord = {
+  id: string
+  lead_id: string | null
+  quote_id?: string | null
+  starts_at?: string | null
+  rrule: string | null
+  status: string
+  until_date?: string | null
+  occurrence_count?: number | null
+  service_address?: string | null
+  lead?: Lead | null
 }
 
 function parseRRule(rrule: string | null) {
@@ -46,6 +67,20 @@ function parseRRule(rrule: string | null) {
     freq: parts['FREQ'] || null,
     interval: parseInt(parts['INTERVAL'] || '1', 10),
   }
+}
+
+function getDaysInMonth(year: number, monthIndex: number) {
+  return new Date(year, monthIndex + 1, 0).getDate()
+}
+
+function addMonthsPreservingDay(date: Date, months: number, anchorDay: number) {
+  const next = new Date(date)
+  const targetMonthIndex = next.getMonth() + months
+  const targetYear = next.getFullYear() + Math.floor(targetMonthIndex / 12)
+  const normalizedMonth = ((targetMonthIndex % 12) + 12) % 12
+  const targetDay = Math.min(anchorDay, getDaysInMonth(targetYear, normalizedMonth))
+  next.setFullYear(targetYear, normalizedMonth, targetDay)
+  return next
 }
 
 function rruleToLabel(rrule: string | null) {
@@ -84,13 +119,12 @@ function generateOccurrencesUntil(
   if (!parsed?.freq) return dates
 
   let currentDate = new Date(startDate)
+  const anchorDay = startDate.getDate()
   while (dates.length < maxCount) {
     if (parsed.freq === 'WEEKLY') {
       currentDate = new Date(currentDate.getTime() + parsed.interval * 7 * 24 * 60 * 60 * 1000)
     } else if (parsed.freq === 'MONTHLY') {
-      const nextMonth = new Date(currentDate)
-      nextMonth.setMonth(nextMonth.getMonth() + parsed.interval)
-      currentDate = nextMonth
+      currentDate = addMonthsPreservingDay(currentDate, parsed.interval, anchorDay)
     } else {
       break
     }
@@ -102,22 +136,73 @@ function generateOccurrencesUntil(
   return dates
 }
 
-function countOccurrencesInMonth(startsAt: string, rrule: string | null, monthStart: Date, monthEnd: Date) {
-  if (!rrule) return 0
-  const startDate = new Date(startsAt)
-  if (Number.isNaN(startDate.getTime())) return 0
+function estimateOccurrencesPer31Days(rrule: string | null) {
+  const parsed = parseRRule(rrule)
+  if (!parsed?.freq || !parsed.interval || parsed.interval < 1) return 0
+  if (parsed.freq === 'WEEKLY') return 31 / (7 * parsed.interval)
+  if (parsed.freq === 'MONTHLY') return 1 / parsed.interval
+  return 0
+}
 
-  let effectiveMonthStart = monthStart
-  let effectiveMonthEnd = monthEnd
-
-  // If the series starts in a future month, use that month for "monthly" revenue.
-  if (startDate > monthEnd) {
-    effectiveMonthStart = new Date(startDate.getFullYear(), startDate.getMonth(), 1, 0, 0, 0, 0)
-    effectiveMonthEnd = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0, 23, 59, 59, 999)
+function parseSeriesUntilDate(untilDateValue: string | null | undefined) {
+  if (!untilDateValue) return null
+  const dateOnly = untilDateValue.split('T')[0]
+  const [yearRaw, monthRaw, dayRaw] = dateOnly.split('-').map((part) => parseInt(part, 10))
+  if (
+    Number.isFinite(yearRaw) &&
+    Number.isFinite(monthRaw) &&
+    Number.isFinite(dayRaw) &&
+    yearRaw > 0 &&
+    monthRaw >= 1 &&
+    monthRaw <= 12 &&
+    dayRaw >= 1 &&
+    dayRaw <= 31
+  ) {
+    return new Date(yearRaw, monthRaw - 1, dayRaw, 23, 59, 59, 999)
   }
 
-  const occurrences = generateOccurrencesUntil(startDate, rrule, effectiveMonthEnd, 200)
-  return occurrences.filter((date) => date >= effectiveMonthStart && date <= effectiveMonthEnd).length
+  const parsed = new Date(untilDateValue)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed
+}
+
+function countOccurrencesInRange(
+  startsAt: string,
+  rrule: string | null,
+  rangeStart: Date,
+  rangeEnd: Date,
+  untilDateValue?: string | null,
+  occurrenceCount?: number | null
+) {
+  if (!rrule) return 0
+  const parsed = parseRRule(rrule)
+  if (!parsed?.freq || !parsed.interval || parsed.interval < 1) return 0
+
+  const startDate = new Date(startsAt)
+  if (Number.isNaN(startDate.getTime())) return 0
+  if (startDate > rangeEnd) return 0
+
+  const seriesUntil = parseSeriesUntilDate(untilDateValue)
+  const cappedRangeEnd =
+    seriesUntil && seriesUntil.getTime() < rangeEnd.getTime()
+      ? seriesUntil
+      : rangeEnd
+  if (cappedRangeEnd.getTime() < startDate.getTime()) return 0
+
+  const dayMs = 24 * 60 * 60 * 1000
+  const spanDays = Math.max(0, (cappedRangeEnd.getTime() - startDate.getTime()) / dayMs)
+
+  let maxCount = 5000
+  if (typeof occurrenceCount === 'number' && occurrenceCount > 0) {
+    maxCount = occurrenceCount
+  } else if (parsed.freq === 'WEEKLY') {
+    maxCount = Math.min(5000, Math.ceil(spanDays / (7 * parsed.interval)) + 2)
+  } else if (parsed.freq === 'MONTHLY') {
+    maxCount = Math.min(5000, Math.ceil(spanDays / (28 * parsed.interval)) + 2)
+  }
+
+  const occurrences = generateOccurrencesUntil(startDate, rrule, cappedRangeEnd, Math.max(1, maxCount))
+  return occurrences.filter((date) => date >= rangeStart && date <= cappedRangeEnd).length
 }
 
 export default function RepeatCustomers() {
@@ -180,35 +265,72 @@ export default function RepeatCustomers() {
       }
 
       const now = new Date()
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0)
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
+      const currentYearStart = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0)
+      const currentYearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999)
+      const previousYearStart = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0)
+      const previousYearEnd = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999)
 
       // Group by lead_id and count recurring schedules
       const leadMap = new Map<string, RepeatCustomer>()
 
       // Process booking series
-      for (const booking of bookingSeries || []) {
+      for (const booking of (bookingSeries || []) as BookingSeriesRecord[]) {
         if (!booking.lead_id) continue
         if (!booking.rrule) continue
+        if (!booking.starts_at) continue
 
         const seriesQuote =
           (booking.quote_id ? quotesById.get(booking.quote_id) : null) ||
           latestQuoteByLead.get(booking.lead_id) ||
           null
         const quoteValue = seriesQuote?.total_inc_gst || 0
-        const occurrencesThisMonth = countOccurrencesInMonth(booking.starts_at, booking.rrule, monthStart, monthEnd)
-        const seriesMonthlyRevenue = quoteValue * occurrencesThisMonth
+        const cleanerPayValue = seriesQuote?.cleaner_pay || 0
+        const serviceAddress =
+          (typeof booking.service_address === 'string' && booking.service_address.trim()) ||
+          (typeof seriesQuote?.address === 'string' && seriesQuote.address.trim()) ||
+          null
+        const occurrencesPer31Days = estimateOccurrencesPer31Days(booking.rrule)
+        const seriesMonthlyRevenue = quoteValue * occurrencesPer31Days
+        const seriesMonthlyCleanerPay = cleanerPayValue * occurrencesPer31Days
+        const seriesCurrentYearRevenue =
+          quoteValue *
+          countOccurrencesInRange(
+            booking.starts_at,
+            booking.rrule,
+            currentYearStart,
+            currentYearEnd,
+            booking.until_date,
+            booking.occurrence_count
+          )
+        const seriesPreviousYearRevenue =
+          quoteValue *
+          countOccurrencesInRange(
+            booking.starts_at,
+            booking.rrule,
+            previousYearStart,
+            previousYearEnd,
+            booking.until_date,
+            booking.occurrence_count
+          )
 
         const existing = leadMap.get(booking.lead_id)
         if (existing) {
           existing.seriesCount++
           existing.monthlyRevenue += seriesMonthlyRevenue
+          existing.monthlyCleanerPay += seriesMonthlyCleanerPay
+          existing.annualRevenueCurrentYear += seriesCurrentYearRevenue
+          existing.annualRevenuePreviousYear += seriesPreviousYearRevenue
+          if (serviceAddress && !existing.cleanAddresses.includes(serviceAddress)) {
+            existing.cleanAddresses.push(serviceAddress)
+          }
           existing.bookingSeries.push({
             id: booking.id,
             starts_at: booking.starts_at,
             rrule: booking.rrule || null,
             status: booking.status,
             monthlyRevenue: seriesMonthlyRevenue,
+            monthlyCleanerPay: seriesMonthlyCleanerPay,
+            serviceAddress,
           })
           if (booking.starts_at) {
             if (!existing.firstBooking || new Date(booking.starts_at) < new Date(existing.firstBooking)) {
@@ -223,8 +345,12 @@ export default function RepeatCustomers() {
             lead: booking.lead || { id: booking.lead_id },
             seriesCount: 1,
             monthlyRevenue: seriesMonthlyRevenue,
+            monthlyCleanerPay: seriesMonthlyCleanerPay,
+            annualRevenueCurrentYear: seriesCurrentYearRevenue,
+            annualRevenuePreviousYear: seriesPreviousYearRevenue,
             firstBooking: booking.starts_at,
             lastBooking: booking.starts_at,
+            cleanAddresses: serviceAddress ? [serviceAddress] : [],
             bookingSeries: [
               {
                 id: booking.id,
@@ -232,6 +358,8 @@ export default function RepeatCustomers() {
                 rrule: booking.rrule || null,
                 status: booking.status,
                 monthlyRevenue: seriesMonthlyRevenue,
+                monthlyCleanerPay: seriesMonthlyCleanerPay,
+                serviceAddress,
               },
             ],
           })
@@ -286,7 +414,7 @@ export default function RepeatCustomers() {
     if (search.trim()) {
       const term = search.toLowerCase()
       result = result.filter((c) => {
-        const haystack = [c.lead.name, c.lead.email, c.lead.phone_number]
+        const haystack = [c.lead.name, c.lead.email, c.lead.phone_number, ...c.cleanAddresses]
           .filter(Boolean)
           .join(' ')
           .toLowerCase()
@@ -315,6 +443,19 @@ export default function RepeatCustomers() {
   const grandTotal = useMemo(() => {
     return repeatCustomers.reduce((sum, c) => sum + c.monthlyRevenue, 0)
   }, [repeatCustomers])
+
+  const currentYear = useMemo(() => new Date().getFullYear(), [])
+
+  const annualTotalCurrentYear = useMemo(() => {
+    return repeatCustomers.reduce((sum, c) => sum + c.annualRevenueCurrentYear, 0)
+  }, [repeatCustomers])
+
+  const annualTotalPreviousYear = useMemo(() => {
+    return repeatCustomers.reduce((sum, c) => sum + c.annualRevenuePreviousYear, 0)
+  }, [repeatCustomers])
+
+  const annualDelta = annualTotalCurrentYear - annualTotalPreviousYear
+  const annualDeltaPercent = annualTotalPreviousYear > 0 ? (annualDelta / annualTotalPreviousYear) * 100 : null
 
   const totalBookings = useMemo(() => {
     return repeatCustomers.reduce((sum, c) => sum + c.seriesCount, 0)
@@ -349,27 +490,57 @@ export default function RepeatCustomers() {
           </button>
         </div>
 
-        {/* Total Value Banner */}
-        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-600/30 via-fuchsia-600/20 to-pink-600/30 border border-violet-400/30 p-6">
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(192,132,252,0.15),transparent_50%)]" />
-          <div className="relative">
-            <div className="flex items-center gap-2 mb-2">
-              <svg className="w-5 h-5 text-violet-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span className="text-sm font-medium text-violet-200 uppercase tracking-wider">Total Monthly Recurring Revenue</span>
-            </div>
-            <p className="text-5xl font-black text-white tracking-tight">
-              ${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </p>
-            <div className="mt-4 flex flex-wrap gap-6 text-sm">
-              <div>
-                <span className="text-white/50">Customers: </span>
-                <span className="text-white font-semibold">{repeatCustomers.length}</span>
+        <div className="grid gap-4 lg:grid-cols-2">
+          {/* Estimated Monthly Banner */}
+          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-600/30 via-fuchsia-600/20 to-pink-600/30 border border-violet-400/30 p-6">
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(192,132,252,0.15),transparent_50%)]" />
+            <div className="relative">
+              <div className="flex items-center gap-2 mb-2">
+                <svg className="w-5 h-5 text-violet-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-sm font-medium text-violet-200 uppercase tracking-wider">Estimated Monthly Recurring Revenue (31-day avg)</span>
               </div>
-              <div>
-                <span className="text-white/50">Recurring Schedules: </span>
-                <span className="text-white font-semibold">{totalBookings}</span>
+              <p className="text-5xl font-black text-white tracking-tight">
+                ${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-6 text-sm">
+                <div>
+                  <span className="text-white/50">Customers: </span>
+                  <span className="text-white font-semibold">{repeatCustomers.length}</span>
+                </div>
+                <div>
+                  <span className="text-white/50">Recurring Schedules: </span>
+                  <span className="text-white font-semibold">{totalBookings}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Accurate Annual YoY Banner */}
+          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-600/30 via-teal-600/20 to-cyan-600/30 border border-emerald-400/30 p-6">
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(16,185,129,0.14),transparent_50%)]" />
+            <div className="relative">
+              <div className="flex items-center gap-2 mb-2">
+                <svg className="w-5 h-5 text-emerald-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 3v18h18M7 14l3-3 3 2 4-5" />
+                </svg>
+                <span className="text-sm font-medium text-emerald-200 uppercase tracking-wider">Accurate Annual Repeat Revenue ({currentYear})</span>
+              </div>
+              <p className="text-5xl font-black text-white tracking-tight">
+                ${annualTotalCurrentYear.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
+              <div className="mt-4 space-y-1 text-sm">
+                <p className="text-white/70">
+                  {currentYear - 1}: ${annualTotalPreviousYear.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </p>
+                <p className={`${annualDelta >= 0 ? 'text-emerald-200' : 'text-rose-200'} font-semibold`}>
+                  {annualDeltaPercent === null
+                    ? annualTotalCurrentYear > 0
+                      ? `New vs ${currentYear - 1} baseline`
+                      : 'No annual repeat revenue yet'
+                    : `${annualDelta >= 0 ? '+' : ''}${annualDeltaPercent.toFixed(1)}% YoY (${annualDelta >= 0 ? '+' : ''}$${annualDelta.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`}
+                </p>
               </div>
             </div>
           </div>
@@ -393,8 +564,8 @@ export default function RepeatCustomers() {
             }}
             className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none"
           >
-            <option value="value-desc">Highest Monthly Revenue</option>
-            <option value="value-asc">Lowest Monthly Revenue</option>
+            <option value="value-desc">Highest Est. Monthly Revenue</option>
+            <option value="value-asc">Lowest Est. Monthly Revenue</option>
             <option value="bookings-desc">Most Schedules</option>
             <option value="bookings-asc">Fewest Schedules</option>
             <option value="name-asc">Name A-Z</option>
@@ -432,11 +603,12 @@ export default function RepeatCustomers() {
               const lead = customer.lead
               const displayName = lead.name || 'Unknown Customer'
               const contact = lead.email || lead.phone_number || ''
+              const primaryAddress = customer.cleanAddresses[0] || ''
 
               return (
                 <a
                   key={lead.id}
-                  href={`/?lead=${lead.id}`}
+                  href={`/app/leads/${lead.id}`}
                   className="block rounded-xl bg-gradient-to-r from-slate-800/50 to-slate-900/50 border border-white/10 p-5 hover:border-violet-400/30 transition group"
                   aria-label={`Open ${displayName}`}
                 >
@@ -449,6 +621,12 @@ export default function RepeatCustomers() {
                       <div>
                         <h3 className="text-white font-semibold text-lg">{displayName}</h3>
                         {contact && <p className="text-sm text-white/50">{contact}</p>}
+                        {primaryAddress && (
+                          <p className="text-sm text-white/50 truncate max-w-[360px]" title={primaryAddress}>
+                            {primaryAddress}
+                            {customer.cleanAddresses.length > 1 ? ` (+${customer.cleanAddresses.length - 1} more)` : ''}
+                          </p>
+                        )}
                         {lead.status && (
                           <span className="inline-block mt-1 px-2 py-0.5 rounded text-[11px] font-medium bg-white/10 text-white/70">
                             {lead.status}
@@ -467,7 +645,13 @@ export default function RepeatCustomers() {
                         <p className="text-3xl font-bold text-white">
                           ${customer.monthlyRevenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                         </p>
-                        <p className="text-xs text-white/50 uppercase tracking-wider">Monthly Revenue</p>
+                        <p className="text-xs text-white/50 uppercase tracking-wider">Est. Monthly (31-day avg)</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-3xl font-bold text-amber-200">
+                          ${customer.monthlyCleanerPay.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                        </p>
+                        <p className="text-xs text-white/50 uppercase tracking-wider">Cleaner Pay (31-day avg)</p>
                       </div>
                     </div>
                   </div>
@@ -491,7 +675,17 @@ export default function RepeatCustomers() {
                           <span className="ml-2 opacity-60">{rruleToLabel(booking.rrule)}</span>
                           {booking.monthlyRevenue > 0 && (
                             <span className="ml-2 opacity-60">
-                              ${booking.monthlyRevenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}/mo
+                              ~${booking.monthlyRevenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}/31d
+                            </span>
+                          )}
+                          {booking.monthlyCleanerPay > 0 && (
+                            <span className="ml-2 opacity-60">
+                              pay ~${booking.monthlyCleanerPay.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}/31d
+                            </span>
+                          )}
+                          {booking.serviceAddress && (
+                            <span className="block mt-1 opacity-60 truncate max-w-[260px]" title={booking.serviceAddress}>
+                              {booking.serviceAddress}
                             </span>
                           )}
                         </div>
