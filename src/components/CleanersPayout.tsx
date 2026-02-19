@@ -283,6 +283,8 @@ export default function CleanersPayout() {
   }, [fetchData])
 
   const handleUpdatePayout = async (occurrenceId: string, payoutAmount: number) => {
+    const org = currentOrg
+    if (!org) return
     setSavingId(occurrenceId)
     setError(null)
     setInfoMessage(null)
@@ -297,7 +299,7 @@ export default function CleanersPayout() {
         .from('cleaner_payouts')
         .update({ payout_amount: payoutAmount })
         .eq('id', row.payout.id)
-        .eq('org_id', currentOrg.id)
+        .eq('org_id', org.id)
 
       if (updateError) throw updateError
 
@@ -328,6 +330,8 @@ export default function CleanersPayout() {
   }
 
   const handleMarkPaid = async (occurrenceId: string) => {
+    const org = currentOrg
+    if (!org) return
     setSavingId(occurrenceId)
     setError(null)
     setInfoMessage(null)
@@ -346,7 +350,7 @@ export default function CleanersPayout() {
           paid_by: isPaid ? null : 'admin',
         })
         .eq('id', row.payout.id)
-        .eq('org_id', currentOrg.id)
+        .eq('org_id', org.id)
 
       if (updateError) throw updateError
 
