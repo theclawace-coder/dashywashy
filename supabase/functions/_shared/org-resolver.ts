@@ -50,11 +50,13 @@ export interface OrgContext {
 // In this case, user verification is bypassed and a service context is returned.
 // ---------------------------------------------------------------------------
 export async function resolveOrgFromRequest(req: Request): Promise<OrgContext> {
-  const authHeader = req.headers.get('Authorization')
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    throw new Error('Unauthorized')
-  }
-  const token = authHeader.replace('Bearer ', '')
+  const authHeader = req.headers.get('Authorization') || req.headers.get('authorization') || ''
+  const token = authHeader.startsWith('Bearer ') ? authHeader.replace('Bearer ', '').trim() : ''
+  const apiKeyHeader =
+    req.headers.get('apikey') ||
+    req.headers.get('x-api-key') ||
+    req.headers.get('apiKey') ||
+    ''
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
@@ -64,8 +66,8 @@ export async function resolveOrgFromRequest(req: Request): Promise<OrgContext> {
   // --- Check if this is a service-to-service call ---
   // If the token matches the service role key and X-Org-Id is provided,
   // bypass user authentication (used for internal function-to-function calls)
-  const headerOrgId = req.headers.get('X-Org-Id')
-  if (token === serviceRoleKey && headerOrgId) {
+  const headerOrgId = req.headers.get('X-Org-Id') || req.headers.get('x-org-id')
+  if (headerOrgId && serviceRoleKey && (token === serviceRoleKey || apiKeyHeader.trim() === serviceRoleKey)) {
     // Service-to-service call - bypass user auth
     const org = await getOrg(supabaseAdmin, headerOrgId)
     return {
@@ -76,6 +78,10 @@ export async function resolveOrgFromRequest(req: Request): Promise<OrgContext> {
       supabaseAdmin,
       org,
     }
+  }
+
+  if (!token) {
+    throw new Error('Unauthorized')
   }
 
   // --- Standard user authentication flow ---

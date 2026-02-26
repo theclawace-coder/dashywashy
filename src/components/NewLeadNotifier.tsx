@@ -11,13 +11,48 @@ type LeadSummary = {
   created_at?: string | null
 }
 
+type DesktopPermission = NotificationPermission | 'unsupported'
+
 const FLASH_INTERVAL_MS = 900
+
+const getDesktopPermission = (): DesktopPermission => {
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported'
+  return Notification.permission
+}
+
+const showDesktopLeadNotification = (lead: LeadSummary) => {
+  if (typeof window === 'undefined' || !('Notification' in window)) return
+  if (Notification.permission !== 'granted') return
+
+  const title = lead.name ? `New lead: ${lead.name}` : 'New lead received'
+  const bodyParts = [lead.email, lead.phone_number].filter(Boolean) as string[]
+  const body = bodyParts.length ? bodyParts.join(' | ') : 'Open dashboard to view lead details.'
+
+  try {
+    const notice = new Notification(title, {
+      body,
+      tag: `lead-${lead.id}`,
+      icon: '/favicon.ico',
+      badge: '/favicon.ico',
+    })
+    notice.onclick = () => {
+      window.focus()
+      window.location.assign(`/app/leads/${lead.id}`)
+      notice.close()
+    }
+  } catch (error) {
+    console.error('Failed to display desktop notification:', error)
+  }
+}
+
 export default function NewLeadNotifier() {
   const { currentOrg } = useAuth()
   const [queue, setQueue] = useState<LeadSummary[]>([])
   const [isVisible, setIsVisible] = useState(false)
   const [callError, setCallError] = useState<string | null>(null)
   const [isCalling, setIsCalling] = useState(false)
+  const [desktopPermission, setDesktopPermission] = useState<DesktopPermission>(() => getDesktopPermission())
+  const [isEnablingDesktopAlerts, setIsEnablingDesktopAlerts] = useState(false)
   const originalTitle = useRef<string>(document.title)
   const flashTimer = useRef<number | null>(null)
 
@@ -26,28 +61,38 @@ export default function NewLeadNotifier() {
 
   // Subscribe to new extracted leads once globally
   useEffect(() => {
-    if (!currentOrg) return
+    if (!currentOrg?.id) return
     const channel = supabase
       .channel('extracted_leads_global_notifier')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id }, (payload) => {
-        const lead = payload.new as any
-        if (!lead?.id) return
-        const summary: LeadSummary = {
-          id: lead.id,
-          name: lead.name ?? 'New lead',
-          phone_number: lead.phone_number ?? null,
-          email: lead.email ?? null,
-          created_at: lead.created_at ?? null,
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'extracted_leads', filter: 'org_id=eq.' + currentOrg.id },
+        (payload) => {
+          const lead = payload.new as any
+          if (!lead?.id) return
+          const summary: LeadSummary = {
+            id: lead.id,
+            name: lead.name ?? 'New lead',
+            phone_number: lead.phone_number ?? null,
+            email: lead.email ?? null,
+            created_at: lead.created_at ?? null,
+          }
+          setQueue((prev) => [...prev, summary])
+          setIsVisible(true)
+          playNewLeadSound()
+          setDesktopPermission(getDesktopPermission())
+          showDesktopLeadNotification(summary)
         }
-        setQueue((prev) => [...prev, summary])
-        setIsVisible(true)
-        playNewLeadSound()
-      })
+      )
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
+  }, [currentOrg?.id])
+
+  useEffect(() => {
+    setDesktopPermission(getDesktopPermission())
   }, [])
 
   // Flash the browser tab title while there are pending leads
@@ -137,6 +182,33 @@ export default function NewLeadNotifier() {
     }
   }
 
+  const handleEnableDesktopAlerts = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return
+    if (Notification.permission === 'granted') {
+      setDesktopPermission('granted')
+      if (activeLead) showDesktopLeadNotification(activeLead)
+      return
+    }
+    if (Notification.permission === 'denied') {
+      setDesktopPermission('denied')
+      return
+    }
+
+    setIsEnablingDesktopAlerts(true)
+    try {
+      const permission = await Notification.requestPermission()
+      setDesktopPermission(permission)
+      if (permission === 'granted' && activeLead) {
+        showDesktopLeadNotification(activeLead)
+      }
+    } catch (error) {
+      console.error('Failed to request desktop notification permission:', error)
+      setDesktopPermission(getDesktopPermission())
+    } finally {
+      setIsEnablingDesktopAlerts(false)
+    }
+  }
+
   if (!activeLead || !isVisible) return null
 
   return (
@@ -171,6 +243,25 @@ export default function NewLeadNotifier() {
           {callError && (
             <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
               {callError}
+            </div>
+          )}
+
+          {desktopPermission === 'default' && (
+            <div className="text-xs text-sky-100 bg-sky-500/10 border border-sky-500/30 rounded-lg p-2 space-y-2">
+              <p>Enable desktop alerts to get browser popups for new leads, even in another tab.</p>
+              <button
+                onClick={handleEnableDesktopAlerts}
+                disabled={isEnablingDesktopAlerts}
+                className="w-full rounded-lg border border-sky-300/40 bg-sky-500/20 py-1.5 font-medium hover:bg-sky-500/30 disabled:opacity-60 transition"
+              >
+                {isEnablingDesktopAlerts ? 'Enabling...' : 'Enable desktop alerts'}
+              </button>
+            </div>
+          )}
+
+          {desktopPermission === 'denied' && (
+            <div className="text-xs text-amber-100 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2">
+              Desktop alerts are blocked. Allow notifications for this site in browser settings.
             </div>
           )}
 

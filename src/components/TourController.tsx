@@ -189,6 +189,21 @@ export default function TourController() {
     return `tour:last-step:${user.id}:${currentOrg?.id ?? 'no-org'}`
   }, [currentOrg?.id, user])
 
+  const completedKey = useMemo(() => {
+    if (!user) return null
+    return `tour:completed:${user.id}`
+  }, [user])
+
+  const isCompletedLocally = useCallback(() => {
+    if (typeof window === 'undefined' || !completedKey) return false
+    return window.localStorage.getItem(completedKey) === '1'
+  }, [completedKey])
+
+  const markCompletedLocally = useCallback(() => {
+    if (typeof window === 'undefined' || !completedKey) return
+    window.localStorage.setItem(completedKey, '1')
+  }, [completedKey])
+
   const readProgress = useCallback(() => {
     if (typeof window === 'undefined' || !progressKey) return 0
     const raw = window.localStorage.getItem(progressKey)
@@ -215,19 +230,34 @@ export default function TourController() {
       return
     }
 
-    const { data } = await supabase
+    if (isCompletedLocally()) {
+      setTourCompleted(true)
+      return
+    }
+
+    const { data, error } = await supabase
       .from('user_preferences')
       .select('tour_completed')
       .eq('user_id', user.id)
       .maybeSingle()
 
-    setTourCompleted(Boolean(data?.tour_completed))
-  }, [user])
+    if (error) {
+      setTourCompleted(false)
+      return
+    }
+
+    const completed = Boolean(data?.tour_completed)
+    if (completed) {
+      markCompletedLocally()
+    }
+    setTourCompleted(completed)
+  }, [isCompletedLocally, markCompletedLocally, user])
 
   const persistCompleted = useCallback(async () => {
     if (!user) return
     setTourCompleted(true)
     clearProgress()
+    markCompletedLocally()
     await supabase
       .from('user_preferences')
       .upsert(
@@ -238,7 +268,7 @@ export default function TourController() {
         },
         { onConflict: 'user_id' }
       )
-  }, [clearProgress, user])
+  }, [clearProgress, markCompletedLocally, user])
 
   const resolveAvailableSteps = useCallback((candidateSteps: TourStep[]) => {
     if (typeof document === 'undefined') return []
@@ -293,6 +323,8 @@ export default function TourController() {
         onSkip: () => {
           driverRef.current = null
           cleanupMascot()
+          // Dismissal counts as completion so auto-tour only appears once.
+          persistCompleted()
         },
         onStepChange: (index) => {
           saveProgress(index)

@@ -104,6 +104,7 @@ const buildFallbackLead = (email: LeadEmail) => {
 }
 
 function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
+  const { currentOrg } = useAuth()
   const [extractedLead, setExtractedLead] = useState<ExtractedLead | null>(null)
   const [isExtracting, setIsExtracting] = useState(false)
   const [extractionError, setExtractionError] = useState<string | null>(null)
@@ -248,17 +249,31 @@ function LeadModal({ email, onClose, onExtracted }: LeadModalProps) {
     const fallback = buildFallbackLead(email)
 
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const accessToken = session?.access_token
+      if (!accessToken) {
+        throw new Error('Not authenticated')
+      }
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${accessToken}`,
+      }
+      if (currentOrg?.id) {
+        headers['X-Org-Id'] = currentOrg.id
+      }
+
       const response = await fetch(`${supabaseUrl}/functions/v1/extract-lead-info`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
-        },
+        headers,
         body: JSON.stringify({ email_id: email.id }),
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.error || `Extraction failed (${response.status})`)
+      }
 
       if (data.success) {
         // Fetch the freshly stored row so we keep the lead id for quote linking

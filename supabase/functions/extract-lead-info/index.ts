@@ -21,6 +21,43 @@ const stripHtml = (value: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
+const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
+const PHONE_REGEX = /(\+?\d[\d\s().-]{7,}\d)/
+
+const normalizePhoneToE164 = (input?: string | null): string | null => {
+  if (!input || typeof input !== 'string') return null
+  let compact = input.trim().replace(/[^\d+]/g, '')
+  if (!compact) return null
+
+  if (compact.startsWith('00')) compact = `+${compact.slice(2)}`
+
+  if (compact.startsWith('+')) {
+    const digits = compact.slice(1).replace(/\D/g, '')
+    if (!digits) return null
+    const fixedDigits = digits.startsWith('610') ? `61${digits.slice(3)}` : digits
+    if (fixedDigits.length < 8 || fixedDigits.length > 15) return null
+    return `+${fixedDigits}`
+  }
+
+  const digitsOnly = compact.replace(/\D/g, '')
+  if (!digitsOnly) return null
+
+  if (digitsOnly.startsWith('61')) {
+    if (digitsOnly.length < 8 || digitsOnly.length > 15) return null
+    return `+${digitsOnly}`
+  }
+
+  if (digitsOnly.startsWith('0') && digitsOnly.length === 10) {
+    return `+61${digitsOnly.slice(1)}`
+  }
+
+  if (digitsOnly.startsWith('4') && digitsOnly.length === 9) {
+    return `+61${digitsOnly}`
+  }
+
+  return null
+}
+
 const extractNameFromSubject = (subject?: string | null) => {
   if (!subject) return null
   const normalized = decodeEntities(subject).trim()
@@ -30,18 +67,61 @@ const extractNameFromSubject = (subject?: string | null) => {
 
 const extractEmailFromText = (text?: string | null) => {
   if (!text) return null
-  const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+  const match = text.match(EMAIL_REGEX)
   return match?.[0]?.trim() || null
 }
 
 const extractPhoneFromText = (text?: string | null) => {
   if (!text) return null
-  const match = text.match(/(\+?\d[\d\s().-]{7,}\d)/)
-  return match?.[1]?.replace(/\s+/g, ' ').trim() || null
+  const match = text.match(PHONE_REGEX)
+  return normalizePhoneToE164(match?.[1] || null)
+}
+
+const isMetadataLine = (line: string) =>
+  /^(date|time|page url|user agent|remote ip|powered by|submitted from|source)\s*:/i.test(line)
+
+const looksLikeBusinessName = (value?: string | null) => {
+  if (!value) return false
+  return /\b(cleaning|services?|pty|ltd|inc|llc|company|group|support|admin|team)\b/i.test(value)
+}
+
+const shouldUseFromEmailFallback = (email?: string | null) => {
+  if (!email) return false
+  const lower = email.trim().toLowerCase()
+  if (!lower) return false
+  if (lower.startsWith('email@')) return false
+  if (lower.startsWith('noreply@')) return false
+  if (lower.startsWith('no-reply@')) return false
+  if (lower.startsWith('donotreply@')) return false
+  if (lower.startsWith('mailer@')) return false
+  if (lower.startsWith('postmaster@')) return false
+  return true
+}
+
+const pickBestName = (existing?: string | null, parsed?: string | null) => {
+  if (!parsed) return existing || null
+  if (!existing) return parsed
+  if (looksLikeBusinessName(existing) && !looksLikeBusinessName(parsed)) return parsed
+  return existing
+}
+
+const pickBestEmail = (existing?: string | null, parsed?: string | null) => {
+  if (!parsed) return existing || null
+  if (!existing) return parsed
+  if (!shouldUseFromEmailFallback(existing)) return parsed
+  return existing
+}
+
+const pickBestPhone = (existing?: string | null, parsed?: string | null) => {
+  const existingNormalized = normalizePhoneToE164(existing)
+  const parsedNormalized = normalizePhoneToE164(parsed)
+  if (!parsedNormalized) return existingNormalized || null
+  if (!existingNormalized) return parsedNormalized
+  return existingNormalized
 }
 
 const LEAD_LABELS = {
-  name: [/^name$/i, /^full\s*name$/i, /^lead\s*name$/i],
+  name: [/^name$/i, /^full\s*name$/i, /^lead\s*name$/i, /^first\s*name$/i, /^last\s*name$/i],
   phone: [/^phone$/i, /^phone\s*number$/i, /^mobile$/i, /^contact\s*number$/i, /^lead\s*number$/i],
   email: [/^email$/i, /^email\s*address$/i, /^contact\s*email$/i, /^lead\s*email$/i],
   notes: [/^notes?$/i, /^message$/i, /^comments?$/i, /^details?$/i, /^lead\s*notes?$/i],
@@ -171,22 +251,81 @@ const parseKeyValuePairsFromText = (text: string) => {
   return fields
 }
 
+const parseUnlabeledLeadBlock = (lines: string[]) => {
+  const fields: LeadFields = {
+    name: null,
+    phone_number: null,
+    email: null,
+    region_notes: null,
+  }
+
+  const leadBlock: string[] = []
+  for (const line of lines) {
+    if (!line) continue
+    if (line === '---' || isMetadataLine(line)) break
+    leadBlock.push(line)
+  }
+
+  if (leadBlock.length === 0) return fields
+  if (leadBlock.some((line) => line.includes(':'))) return fields
+
+  const phoneIdx = leadBlock.findIndex((line) => PHONE_REGEX.test(line))
+  const emailIdx = leadBlock.findIndex((line) => EMAIL_REGEX.test(line))
+
+  if (phoneIdx >= 0) {
+    fields.phone_number = extractPhoneFromText(leadBlock[phoneIdx])
+  }
+  if (emailIdx >= 0) {
+    fields.email = extractEmailFromText(leadBlock[emailIdx])
+  }
+
+  const contactCutoffCandidates = [phoneIdx, emailIdx].filter((idx) => idx >= 0)
+  const contactCutoff = contactCutoffCandidates.length > 0
+    ? Math.min(...contactCutoffCandidates)
+    : leadBlock.length
+
+  const nameParts = leadBlock
+    .slice(0, contactCutoff)
+    .map((line) => line.trim())
+    .filter((line) => line && !PHONE_REGEX.test(line) && !EMAIL_REGEX.test(line))
+    .slice(0, 2)
+
+  if (nameParts.length > 0) {
+    fields.name = nameParts.join(' ')
+  }
+
+  const usedIndexes = new Set<number>([phoneIdx, emailIdx].filter((idx) => idx >= 0))
+  const notes = leadBlock
+    .filter((line, idx) => !usedIndexes.has(idx))
+    .slice(contactCutoff + (nameParts.length > 0 ? 0 : 1))
+    .join(' ')
+    .trim()
+
+  if (notes) {
+    fields.region_notes = notes
+  }
+
+  return fields
+}
+
 const parseLeadFromEmail = (subject: string | null, fromEmail: string | null, body: string | null): LeadFields => {
   const text = body ? stripHtml(body) : ''
   const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
   const keyValues = parseKeyValuePairsFromText(text)
   const lineValues = parseKeyValueLines(lines)
+  const unlabeledValues = parseUnlabeledLeadBlock(lines)
+  const subjectName = extractNameFromSubject(subject)
   const combined = {
-    name: keyValues.name || lineValues.name,
-    phone_number: keyValues.phone_number || lineValues.phone_number,
-    email: keyValues.email || lineValues.email,
-    region_notes: keyValues.region_notes || lineValues.region_notes,
+    name: keyValues.name || lineValues.name || unlabeledValues.name,
+    phone_number: keyValues.phone_number || lineValues.phone_number || unlabeledValues.phone_number,
+    email: keyValues.email || lineValues.email || unlabeledValues.email,
+    region_notes: keyValues.region_notes || lineValues.region_notes || unlabeledValues.region_notes,
   }
 
   return {
-    name: combined.name || extractNameFromSubject(subject) || null,
-    phone_number: combined.phone_number || extractPhoneFromText(text),
-    email: combined.email || (fromEmail ? fromEmail.trim() : null) || extractEmailFromText(text),
+    name: combined.name || (!looksLikeBusinessName(subjectName) ? subjectName : null) || null,
+    phone_number: normalizePhoneToE164(combined.phone_number) || extractPhoneFromText(text),
+    email: combined.email || extractEmailFromText(text) || (shouldUseFromEmailFallback(fromEmail) ? fromEmail?.trim() || null : null),
     region_notes: combined.region_notes || null,
   }
 }
@@ -248,9 +387,9 @@ Deno.serve(async (req) => {
 
     const payloadToPersist = {
       email_id: emailId,
-      name: existingLead?.name || parsed.name,
-      phone_number: existingLead?.phone_number || parsed.phone_number,
-      email: existingLead?.email || parsed.email,
+      name: pickBestName(existingLead?.name, parsed.name),
+      phone_number: pickBestPhone(existingLead?.phone_number, parsed.phone_number),
+      email: pickBestEmail(existingLead?.email, parsed.email),
       region_notes: existingLead?.region_notes || parsed.region_notes,
       extracted_at: extractedAt,
       org_id: orgId,

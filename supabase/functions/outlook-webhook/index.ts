@@ -238,15 +238,20 @@ Deno.serve(async (req) => {
 
         // Call extract-lead-info edge function (service-to-service with X-Org-Id)
         try {
-          await fetch(`${supabaseUrl}/functions/v1/extract-lead-info`, {
+          const extractRes = await fetch(`${supabaseUrl}/functions/v1/extract-lead-info`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${supabaseServiceKey}`,
+              apikey: supabaseServiceKey,
               "X-Org-Id": orgId,
             },
             body: JSON.stringify({ email_id: emailRow.id }),
           });
+          if (!extractRes.ok) {
+            const errText = await extractRes.text().catch(() => "")
+            throw new Error(`extract-lead-info failed (${extractRes.status}): ${errText}`)
+          }
           console.log(`[Outlook Webhook] Auto-extracted lead for email ${emailRow.id}`);
         } catch (extractErr) {
           console.error(`[Outlook Webhook] Auto-extract failed for email ${emailRow.id}`, extractErr);

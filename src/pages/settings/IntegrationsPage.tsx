@@ -178,12 +178,63 @@ export default function IntegrationsPage() {
     return ''
   }
 
+  const extractActivationErrorMessage = async (err: unknown): Promise<string> => {
+    if (err && typeof err === 'object' && 'context' in err) {
+      const context = (err as { context?: unknown }).context
+      if (context instanceof Response) {
+        try {
+          const payload = await context.clone().json() as
+            | { error?: string; details?: { error?: { message?: string } }; message?: string; status?: number }
+            | undefined
+
+          const base =
+            payload?.error ||
+            payload?.details?.error?.message ||
+            payload?.message
+
+          if (base) {
+            return payload?.status ? `${base} (status ${payload.status})` : base
+          }
+        } catch {
+          try {
+            const text = await context.clone().text()
+            if (text.trim()) return text
+          } catch {
+            // Fall through to default handling
+          }
+        }
+      }
+    }
+
+    return err instanceof Error ? err.message : 'Activation failed'
+  }
+
   const activateIntegration = async (provider: string) => {
     if (!currentOrg) return
     setActivating(provider)
     setActivationStatus((prev) => ({ ...prev, [provider]: { type: 'success', message: '' } }))
 
     try {
+      const config = formData[provider] || {}
+      const enabled = enabledState[provider] ?? false
+
+      // Persist latest config/toggle first so edge functions read current state.
+      const { error: saveError } = await supabase
+        .from('organization_integrations')
+        .upsert(
+          {
+            org_id: currentOrg.id,
+            provider,
+            config,
+            enabled,
+          },
+          { onConflict: 'org_id,provider' }
+        )
+
+      if (saveError) {
+        throw new Error(`Failed to save integration before activation: ${saveError.message}`)
+      }
+
       let fnName = ''
       let body: Record<string, unknown> = {}
 
@@ -223,7 +274,7 @@ export default function IntegrationsPage() {
       }))
       await fetchIntegrations()
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Activation failed'
+      const message = await extractActivationErrorMessage(err)
       setActivationStatus((prev) => ({
         ...prev,
         [provider]: { type: 'error', message },
