@@ -85,6 +85,7 @@ type CalendarView = (typeof CALENDAR_VIEWS)[number]
 const isCalendarView = (val: string | null | undefined): val is CalendarView =>
   CALENDAR_VIEWS.includes(val as CalendarView)
 type RescheduleScope = 'single' | 'future'
+type CancellationScope = 'single' | 'future'
 
 async function mapboxSuggest(query: string, token: string | null) {
   if (!token) return []
@@ -121,7 +122,7 @@ function EventDetailModal({
   onStatusChange: (
     occurrenceId: string,
     status: string,
-    options?: { cancellationNote?: string }
+    options?: { cancellationNote?: string; scope?: CancellationScope }
   ) => Promise<boolean>
   onReschedule: (occurrenceId: string, newStart: Date, scope: RescheduleScope) => Promise<void>
   cleaners: Cleaner[]
@@ -232,10 +233,10 @@ function EventDetailModal({
     return () => document.removeEventListener('keydown', handleEsc)
   }, [onClose])
 
-  const handleStatusChange = async (status: string) => {
+  const handleStatusChange = async (status: string, options?: { scope?: CancellationScope }) => {
     setIsUpdating(true)
     try {
-      const ok = await onStatusChange(occurrence.id, status)
+      const ok = await onStatusChange(occurrence.id, status, options)
       if (ok) onClose()
     } finally {
       setIsUpdating(false)
@@ -488,7 +489,7 @@ function EventDetailModal({
           <div>
             <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3">Status</h4>
             <div className="flex flex-wrap gap-2">
-              {['scheduled', 'completed', 'skipped', 'cancelled'].map((status) => (
+              {['scheduled', 'completed', 'skipped'].map((status) => (
                 <button
                   key={status}
                   onClick={() => handleStatusChange(status)}
@@ -502,6 +503,24 @@ function EventDetailModal({
                   {status}
                 </button>
               ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                onClick={() => handleStatusChange('cancelled', { scope: 'single' })}
+                disabled={isUpdating || occurrence.status === 'cancelled'}
+                className="px-3 py-1.5 text-sm rounded-lg border transition-all bg-rose-500/10 border-rose-500/30 text-rose-200 hover:bg-rose-500/20 disabled:opacity-50"
+              >
+                Cancel this job
+              </button>
+              {series.rrule ? (
+                <button
+                  onClick={() => handleStatusChange('cancelled', { scope: 'future' })}
+                  disabled={isUpdating}
+                  className="px-3 py-1.5 text-sm rounded-lg border transition-all bg-orange-500/10 border-orange-500/30 text-orange-200 hover:bg-orange-500/20 disabled:opacity-50"
+                >
+                  Cancel this + future jobs
+                </button>
+              ) : null}
             </div>
             {actionError ? (
               <div className="mt-3 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-sm">
@@ -631,12 +650,16 @@ export default function Calendar() {
   const [savingReview, setSavingReview] = useState(false)
   const [cancelTarget, setCancelTarget] = useState<{
     occurrenceId: string
+    seriesId: string
+    seriesStatus: string
+    isRecurring: boolean
     previousStatus: string
     leadId: string | null
     leadName: string
     seriesTitle: string
     startAt: string
   } | null>(null)
+  const [cancelScope, setCancelScope] = useState<CancellationScope>('single')
   const [cancelReason, setCancelReason] = useState('')
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [savingCancellation, setSavingCancellation] = useState(false)
@@ -715,7 +738,14 @@ export default function Calendar() {
         return
       }
 
-      const calendarEvents: CalendarEvent[] = (occurrences || []).map((occ: any) => {
+      const nowMs = Date.now()
+      const visibleOccurrences = (occurrences || []).filter((occ: any) => {
+        if (occ.status !== 'cancelled') return true
+        const startMs = new Date(occ.start_at).getTime()
+        return Number.isFinite(startMs) && startMs < nowMs
+      })
+
+      const calendarEvents: CalendarEvent[] = visibleOccurrences.map((occ: any) => {
         let colors = STATUS_COLORS[occ.status] || STATUS_COLORS.scheduled
         if (occ.status === 'scheduled' && occ.cleaner_id) {
           colors = ASSIGNED_SCHEDULED_COLORS
@@ -821,21 +851,32 @@ export default function Calendar() {
 
   // Update occurrence status
   const handleStatusChange = useCallback(
-    async (occurrenceId: string, status: string, options?: { cancellationNote?: string }) => {
+    async (occurrenceId: string, status: string, options?: { cancellationNote?: string; scope?: CancellationScope }) => {
       setActionError(null)
       const ev = events.find((e) => e.id === occurrenceId) || selectedEvent || null
       const leadId = ev?.extendedProps?.series?.lead_id || ev?.extendedProps?.lead?.id || null
       const leadName = ev?.extendedProps?.lead?.name || 'Customer'
       const seriesTitle = ev?.extendedProps?.series?.title || 'Job'
+      const seriesId =
+        ev?.extendedProps?.series?.id ||
+        ev?.extendedProps?.occurrence?.series_id ||
+        ''
+      const seriesStatus = ev?.extendedProps?.series?.status || 'active'
+      const isRecurring = Boolean(ev?.extendedProps?.series?.rrule)
       const startAt = ev?.extendedProps?.occurrence?.start_at || new Date().toISOString()
       const previousStatus = ev?.extendedProps?.occurrence?.status || 'scheduled'
       const cancellationNote = options?.cancellationNote?.trim() || ''
+      const cancellationScope = options?.scope || 'single'
 
       if (status === 'cancelled' && !cancellationNote) {
         setCancelError(null)
         setCancelReason('')
+        setCancelScope(cancellationScope)
         setCancelTarget({
           occurrenceId,
+          seriesId,
+          seriesStatus,
+          isRecurring,
           previousStatus,
           leadId,
           leadName,
@@ -845,19 +886,73 @@ export default function Calendar() {
         return false
       }
 
-      const { error } = await supabase
-        .from('booking_occurrences')
-        .update({ status })
-        .eq('id', occurrenceId)
-        .eq('org_id', currentOrg!.id)
+      let updatedOccurrenceIds: string[] = []
+      let seriesStatusUpdated = false
 
-      if (error) {
-        console.error('Error updating status:', error)
-        setActionError(error.message || 'Could not update status. Please try again.')
-        if (status === 'cancelled') {
-          setCancelError(error.message || 'Could not cancel appointment. Please try again.')
+      if (status === 'cancelled' && cancellationScope === 'future' && seriesId) {
+        const { data: futureRows, error: futureRowsError } = await supabase
+          .from('booking_occurrences')
+          .select('id')
+          .eq('series_id', seriesId)
+          .eq('org_id', currentOrg!.id)
+          .gte('start_at', startAt)
+          .eq('status', 'scheduled')
+
+        if (futureRowsError) {
+          console.error('Error loading future occurrences to cancel:', futureRowsError)
+          const msg = futureRowsError.message || 'Could not cancel future appointments. Please try again.'
+          setActionError(msg)
+          setCancelError(msg)
+          return false
         }
-        return false
+
+        updatedOccurrenceIds = (futureRows || []).map((row: any) => row.id)
+        if (updatedOccurrenceIds.length > 0) {
+          const { error: futureUpdateError } = await supabase
+            .from('booking_occurrences')
+            .update({ status: 'cancelled' })
+            .in('id', updatedOccurrenceIds)
+            .eq('org_id', currentOrg!.id)
+
+          if (futureUpdateError) {
+            console.error('Error cancelling future occurrences:', futureUpdateError)
+            const msg = futureUpdateError.message || 'Could not cancel future appointments. Please try again.'
+            setActionError(msg)
+            setCancelError(msg)
+            return false
+          }
+        }
+
+        const { error: seriesError } = await supabase
+          .from('booking_series')
+          .update({ status: 'cancelled' })
+          .eq('id', seriesId)
+          .eq('org_id', currentOrg!.id)
+
+        if (seriesError) {
+          console.error('Error updating series status:', seriesError)
+          const msg = seriesError.message || 'Could not update recurring plan status. Please try again.'
+          setActionError(msg)
+          setCancelError(msg)
+          return false
+        }
+        seriesStatusUpdated = true
+      } else {
+        const { error } = await supabase
+          .from('booking_occurrences')
+          .update({ status })
+          .eq('id', occurrenceId)
+          .eq('org_id', currentOrg!.id)
+
+        if (error) {
+          console.error('Error updating status:', error)
+          setActionError(error.message || 'Could not update status. Please try again.')
+          if (status === 'cancelled') {
+            setCancelError(error.message || 'Could not cancel appointment. Please try again.')
+          }
+          return false
+        }
+        updatedOccurrenceIds = [occurrenceId]
       }
 
       if (status === 'cancelled') {
@@ -867,7 +962,10 @@ export default function Calendar() {
             if (Number.isNaN(parsed.getTime())) return startAt
             return format(parsed, 'MMMM d, yyyy')
           })()
-          const journalBody = `${seriesTitle} - ${leadName} - ${dateLabel} Cancelled - ${cancellationNote}`
+          const journalBody =
+            cancellationScope === 'future'
+              ? `${seriesTitle} - ${leadName} - Future cleans cancelled from ${dateLabel} - ${cancellationNote}`
+              : `${seriesTitle} - ${leadName} - ${dateLabel} Cancelled - ${cancellationNote}`
           const { error: journalError } = await supabase.from('lead_journal_entries').insert({
             org_id: currentOrg!.id,
             lead_id: leadId,
@@ -877,22 +975,50 @@ export default function Calendar() {
 
           if (journalError) {
             console.error('Error saving cancellation note:', journalError)
-            const rollbackStatus = previousStatus || 'scheduled'
-            const { error: rollbackError } = await supabase
-              .from('booking_occurrences')
-              .update({ status: rollbackStatus })
-              .eq('id', occurrenceId)
-              .eq('org_id', currentOrg!.id)
-            if (rollbackError) {
-              console.error('Error rolling back cancelled status:', rollbackError)
-              const msg = 'Could not save cancellation note. Appointment may still be cancelled.'
-              setActionError(msg)
-              setCancelError(msg)
+            let rollbackFailed = false
+
+            if (cancellationScope === 'future' && seriesId) {
+              if (updatedOccurrenceIds.length > 0) {
+                const { error: rollbackFutureError } = await supabase
+                  .from('booking_occurrences')
+                  .update({ status: 'scheduled' })
+                  .in('id', updatedOccurrenceIds)
+                  .eq('org_id', currentOrg!.id)
+                if (rollbackFutureError) {
+                  rollbackFailed = true
+                  console.error('Error rolling back future cancellations:', rollbackFutureError)
+                }
+              }
+
+              if (seriesStatusUpdated) {
+                const { error: rollbackSeriesError } = await supabase
+                  .from('booking_series')
+                  .update({ status: seriesStatus })
+                  .eq('id', seriesId)
+                  .eq('org_id', currentOrg!.id)
+                if (rollbackSeriesError) {
+                  rollbackFailed = true
+                  console.error('Error rolling back series status:', rollbackSeriesError)
+                }
+              }
             } else {
-              const msg = 'Could not save cancellation note. Cancellation was not applied.'
-              setActionError(msg)
-              setCancelError(msg)
+              const rollbackStatus = previousStatus || 'scheduled'
+              const { error: rollbackError } = await supabase
+                .from('booking_occurrences')
+                .update({ status: rollbackStatus })
+                .eq('id', occurrenceId)
+                .eq('org_id', currentOrg!.id)
+              if (rollbackError) {
+                rollbackFailed = true
+                console.error('Error rolling back cancelled status:', rollbackError)
+              }
             }
+
+            const msg = rollbackFailed
+              ? 'Could not save cancellation note. Cancellation may still be applied.'
+              : 'Could not save cancellation note. Cancellation was not applied.'
+            setActionError(msg)
+            setCancelError(msg)
             fetchBookings(dateRange.start, dateRange.end)
             return false
           }
@@ -957,6 +1083,7 @@ export default function Calendar() {
   const closeCancellationModal = useCallback(() => {
     if (savingCancellation) return
     setCancelTarget(null)
+    setCancelScope('single')
     setCancelReason('')
     setCancelError(null)
   }, [savingCancellation])
@@ -972,18 +1099,22 @@ export default function Calendar() {
     setSavingCancellation(true)
     setCancelError(null)
     try {
-      const ok = await handleStatusChange(cancelTarget.occurrenceId, 'cancelled', { cancellationNote: reason })
+      const ok = await handleStatusChange(cancelTarget.occurrenceId, 'cancelled', {
+        cancellationNote: reason,
+        scope: cancelScope,
+      })
       if (!ok) return
 
       playSaveSound()
       setCancelTarget(null)
+      setCancelScope('single')
       setCancelReason('')
       setCancelError(null)
       setSelectedEvent(null)
     } finally {
       setSavingCancellation(false)
     }
-  }, [cancelReason, cancelTarget, handleStatusChange])
+  }, [cancelReason, cancelScope, cancelTarget, handleStatusChange])
 
   const handleAssignCleaner = useCallback(
     async (occurrenceId: string, cleanerId: string | null) => {
@@ -1511,6 +1642,42 @@ export default function Calendar() {
               </div>
 
               <div className="p-5 space-y-4">
+                {cancelTarget.isRecurring ? (
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
+                      Cancellation scope
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCancelScope('single')}
+                        disabled={savingCancellation}
+                        className={`px-3 py-2 text-sm rounded-lg border transition-all ${
+                          cancelScope === 'single'
+                            ? 'bg-white/20 border-white/30 text-white font-medium'
+                            : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                        }`}
+                      >
+                        This job only
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCancelScope('future')}
+                        disabled={savingCancellation}
+                        className={`px-3 py-2 text-sm rounded-lg border transition-all ${
+                          cancelScope === 'future'
+                            ? 'bg-white/20 border-white/30 text-white font-medium'
+                            : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                        }`}
+                      >
+                        This + future jobs
+                      </button>
+                    </div>
+                    <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                      Future cancellation hides upcoming jobs from the calendar without deleting lead history.
+                    </p>
+                  </div>
+                ) : null}
                 <div>
                   <label className="block text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
                     Cancellation reason
@@ -1558,7 +1725,11 @@ export default function Calendar() {
                     )
                   }
                 >
-                  {savingCancellation ? 'Cancelling...' : 'Cancel appointment'}
+                  {savingCancellation
+                    ? 'Cancelling...'
+                    : cancelScope === 'future'
+                    ? 'Cancel this + future jobs'
+                    : 'Cancel this job'}
                 </Button>
               </div>
             </div>
