@@ -709,11 +709,15 @@ export default function QuoteTool({ lead, emailId, autoEditLatest = false }: Quo
           quoteId: latestQuote.id,
           shareUrl,
           emailOverride: targetEmail,
+          respectAutomationToggle: false,
         }),
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
-        throw new Error(data?.error || 'Failed to send quote email')
+        throw new Error(data?.error || data?.message || 'Failed to send quote email')
+      }
+      if (data?.skipped === 'quote_email_disabled') {
+        throw new Error('Quote email automation is disabled in Settings.')
       }
       setSaveMessage(`Quote email sent to ${data?.email_to || targetEmail}.`)
     } catch (err) {

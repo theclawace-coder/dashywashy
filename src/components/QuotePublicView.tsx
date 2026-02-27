@@ -244,6 +244,7 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
 
     setPaymentError(null)
     setPaymentLoading(true)
+    setInfoMessage('Preparing secure Stripe checkout...')
     try {
       const updated = await recordAcceptance('card')
       if (!updated) {
@@ -464,6 +465,18 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
               <div className="text-xs text-emerald-200">
                 ✓ Accepted by {quote.accepted_name || 'customer'} on {quote.accepted_date || quote.accepted_at}
               </div>
+              {paymentLoading && !paymentLinkUrl && (
+                <button
+                  disabled
+                  className="w-full sm:w-auto rounded-lg bg-white/10 text-white/80 font-medium py-3 px-6 inline-flex items-center gap-2 border border-white/15 cursor-not-allowed"
+                >
+                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                    <path className="opacity-90" fill="currentColor" d="M22 12a10 10 0 00-10-10v3a7 7 0 017 7h3z" />
+                  </svg>
+                  Preparing secure Stripe checkout...
+                </button>
+              )}
               {paymentLinkUrl && (
                 <button
                   onClick={() => window.open(paymentLinkUrl, '_blank')}
@@ -538,7 +551,7 @@ export default function QuotePublicView({ shareToken }: QuotePublicViewProps) {
                     disabled={isAccepting || paymentLoading}
                     className="w-full rounded-lg bg-white/10 text-white text-sm py-2 disabled:opacity-60"
                   >
-                    {paymentLoading ? 'Starting…' : 'Accept & pay by credit card'}
+                    {paymentLoading ? 'Preparing secure checkout...' : 'Accept & pay by credit card'}
                   </button>
                 )}
               </div>

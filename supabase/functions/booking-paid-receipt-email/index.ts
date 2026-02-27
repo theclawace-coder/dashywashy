@@ -65,6 +65,29 @@ function normalizeList(value: unknown): string {
     .join(', ')
 }
 
+function getSiteUrl(): string {
+  return (
+    Deno.env.get('SITE_URL') ||
+    Deno.env.get('PUBLIC_SITE_URL') ||
+    Deno.env.get('APP_URL') ||
+    ''
+  )
+}
+
+function buildPublicQuoteUrl(shareToken: string): string | null {
+  const siteUrl = getSiteUrl()
+  if (!siteUrl) return null
+
+  try {
+    const base = new URL(siteUrl)
+    const url = new URL('/quote', `${base.protocol}//${base.host}`)
+    url.searchParams.set('quote', shareToken)
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
 async function sendReceiptEmail(params: {
   to: string
   receiptNumber: string
@@ -81,6 +104,13 @@ async function sendReceiptEmail(params: {
   totalLabel: string
   paidAmountLabel: string
   paymentMethod: string
+  shareUrl?: string | null
+  businessName?: string
+  businessLegalName?: string
+  businessOperatingName?: string
+  businessEmail?: string
+  businessPhone?: string
+  businessAbn?: string
 }) {
   const {
     to,
@@ -98,19 +128,32 @@ async function sendReceiptEmail(params: {
     totalLabel,
     paidAmountLabel,
     paymentMethod,
+    shareUrl,
+    businessName: businessNameParam,
+    businessLegalName: businessLegalNameParam,
+    businessOperatingName: businessOperatingNameParam,
+    businessEmail: businessEmailParam,
+    businessPhone: businessPhoneParam,
+    businessAbn: businessAbnParam,
   } = params
 
-  const subject = `Receipt — ${businessName}`
+  const resolvedBusinessName = businessNameParam || businessName
+  const resolvedBusinessLegalName = businessLegalNameParam || businessLegalName
+  const resolvedBusinessOperatingName = businessOperatingNameParam || businessOperatingName
+  const resolvedBusinessEmail = businessEmailParam || businessEmail
+  const resolvedBusinessPhone = businessPhoneParam || businessPhone
+  const resolvedBusinessAbn = businessAbnParam || businessAbn
+  const subject = `Receipt — ${resolvedBusinessName}`
 
   const text = [
     `Tax Invoice / Receipt`,
     ``,
-    `${businessName}`,
-    ...(businessLegalName ? [`Legal name: ${businessLegalName}`] : []),
-    `Operating as business name: ${businessOperatingName}`,
-    `ABN: ${businessAbn}`,
-    `Email: ${businessEmail}`,
-    `Phone: ${businessPhone}`,
+    `${resolvedBusinessName}`,
+    ...(resolvedBusinessLegalName ? [`Legal name: ${resolvedBusinessLegalName}`] : []),
+    `Operating as business name: ${resolvedBusinessOperatingName}`,
+    `ABN: ${resolvedBusinessAbn}`,
+    `Email: ${resolvedBusinessEmail}`,
+    `Phone: ${resolvedBusinessPhone}`,
     ``,
     `Receipt number: ${receiptNumber}`,
     `Issue date: ${issueDate}`,
@@ -128,6 +171,7 @@ async function sendReceiptEmail(params: {
     `GST (10%): ${gstLabel}`,
     `Total (inc GST): ${totalLabel}`,
     `Paid: ${paidAmountLabel}`,
+    ...(shareUrl ? [``, `View & Pay Online: ${shareUrl}`] : []),
     ``,
     `Thank you for your business.`,
   ].join('\n')
@@ -137,34 +181,34 @@ async function sendReceiptEmail(params: {
       <div style="max-width:680px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
         <div style="background:#111827;color:#ffffff;padding:20px 24px;">
           <h1 style="margin:0;font-size:20px;">Tax Invoice / Receipt</h1>
-          <p style="margin:6px 0 0;font-size:14px;">${businessName}</p>
+          <p style="margin:6px 0 0;font-size:14px;">${resolvedBusinessName}</p>
         </div>
 
         <div style="padding:20px 24px;font-size:14px;line-height:1.6;color:#0f172a;">
           <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:16px;">
             ${
-              businessLegalName
+              resolvedBusinessLegalName
                 ? `<tr>
                     <td style="padding:4px 0;color:#64748b;width:160px;">Legal name</td>
-                    <td style="padding:4px 0;">${businessLegalName}</td>
+                    <td style="padding:4px 0;">${resolvedBusinessLegalName}</td>
                   </tr>`
                 : ''
             }
             <tr>
               <td style="padding:4px 0;color:#64748b;width:160px;">Operating as</td>
-              <td style="padding:4px 0;">${businessOperatingName}</td>
+              <td style="padding:4px 0;">${resolvedBusinessOperatingName}</td>
             </tr>
             <tr>
               <td style="padding:4px 0;color:#64748b;width:160px;">ABN</td>
-              <td style="padding:4px 0;">${businessAbn}</td>
+              <td style="padding:4px 0;">${resolvedBusinessAbn}</td>
             </tr>
             <tr>
               <td style="padding:4px 0;color:#64748b;">Email</td>
-              <td style="padding:4px 0;">${businessEmail}</td>
+              <td style="padding:4px 0;">${resolvedBusinessEmail}</td>
             </tr>
             <tr>
               <td style="padding:4px 0;color:#64748b;">Phone</td>
-              <td style="padding:4px 0;">${businessPhone}</td>
+              <td style="padding:4px 0;">${resolvedBusinessPhone}</td>
             </tr>
           </table>
 
@@ -227,6 +271,16 @@ async function sendReceiptEmail(params: {
               </tr>
             </table>
           </div>
+
+          ${
+            shareUrl
+              ? `<div style="margin:18px 0 0;">
+                  <a href="${shareUrl}" style="display:inline-block;background:#2563eb;color:#ffffff;padding:11px 18px;border-radius:8px;text-decoration:none;font-weight:600;">
+                    View &amp; Pay Online
+                  </a>
+                </div>`
+              : ''
+          }
 
           <p style="margin:16px 0 0;color:#64748b;font-size:12px;">
             GST included where applicable. Keep this receipt for your records.
@@ -320,7 +374,7 @@ Deno.serve(async (req) => {
     payment_notes,
     quote_id,
     booking_series ( id, lead_id, title, timezone, service_address ),
-    quotes ( id, quote_number, customer_name, customer_email, customer_phone, service, addons, custom_addons, address, subtotal, discount_amount, gst, total_inc_gst )
+    quotes ( id, quote_number, customer_name, customer_email, customer_phone, service, addons, custom_addons, address, subtotal, discount_amount, gst, total_inc_gst, share_token )
   `
 
   const { data: occurrence, error: occurrenceError } = payload.occurrenceId
@@ -337,12 +391,15 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Occurrence not found' }, 404)
   }
 
-  if ((occurrence as any).org_id) {
-    const { data: orgRow } = await supabase
+  const occurrenceOrgId = (occurrence as any).org_id || null
+  let orgRow: any = null
+  if (occurrenceOrgId) {
+    const { data } = await supabase
       .from('organizations')
-      .select('use_workflow_automations')
-      .eq('id', (occurrence as any).org_id)
+      .select('use_workflow_automations, business_name, business_legal_name, business_operating_name, business_email, business_phone, business_abn, business_address')
+      .eq('id', occurrenceOrgId)
       .maybeSingle()
+    orgRow = data
     if (orgRow?.use_workflow_automations) {
       return jsonResponse({ success: true, skipped: 'workflow_automations_enabled' })
     }
@@ -402,6 +459,14 @@ Deno.serve(async (req) => {
   const issueDate = formatDateTime(paidAt, timezone)
   const receiptNumber = quote?.quote_number ? `${quote.quote_number}-R` : occurrence.id
   const paymentMethod = occurrence.payment_notes || 'Paid'
+  const shareUrl = quote?.share_token ? buildPublicQuoteUrl(String(quote.share_token)) : null
+
+  const orgBusinessName = (orgRow?.business_name as string) || businessName
+  const orgBusinessLegalName = (orgRow?.business_legal_name as string) || businessLegalName
+  const orgBusinessOperatingName = (orgRow?.business_operating_name as string) || businessOperatingName
+  const orgBusinessEmail = (orgRow?.business_email as string) || businessEmail
+  const orgBusinessPhone = (orgRow?.business_phone as string) || businessPhone
+  const orgBusinessAbn = (orgRow?.business_abn as string) || businessAbn
 
   const targetEmail = payload.testOnly ? payload.testEmailTo || '' : customerEmail
   if (!targetEmail) {
@@ -424,6 +489,13 @@ Deno.serve(async (req) => {
     totalLabel,
     paidAmountLabel,
     paymentMethod,
+    shareUrl,
+    businessName: orgBusinessName,
+    businessLegalName: orgBusinessLegalName,
+    businessOperatingName: orgBusinessOperatingName,
+    businessEmail: orgBusinessEmail,
+    businessPhone: orgBusinessPhone,
+    businessAbn: orgBusinessAbn,
   })
 
   if (!payload.testOnly) {

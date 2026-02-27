@@ -6060,7 +6060,7 @@ async function executeAction(
           'apikey': serviceKey,
           'X-Org-Id': orgId
         },
-        body: JSON.stringify({ quoteId, emailOverride: email })
+        body: JSON.stringify({ quoteId, emailOverride: email, respectAutomationToggle: false })
       })
 
       if (!response.ok) {

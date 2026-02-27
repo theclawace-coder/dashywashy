@@ -1,0 +1,3 @@
+SELECT id, name, use_workflow_automations
+FROM organizations
+WHERE id = '00000000-0000-0000-0000-000000000001';

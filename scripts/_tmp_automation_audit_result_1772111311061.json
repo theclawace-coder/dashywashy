@@ -1,0 +1,222 @@
+{
+  "batch_id": "automation-audit-2026-02-26T13:08:07.663Z",
+  "org_id": "00000000-0000-0000-0000-000000000001",
+  "lead_id": "cf692838-3b39-4a75-a03e-7fd4c74695de",
+  "quote_id": "538ae964-4c5a-429d-b126-8e40b55136ea",
+  "cleaner_id": "d896f6fc-ab59-4ca8-bfed-fd4de81e3fd7",
+  "booking_id": "112e3623-9e41-4130-ac54-ef7e9dc5cde1",
+  "runner_passes": [
+    {
+      "ok": true,
+      "status": 200,
+      "data": {
+        "success": true,
+        "processed": 10,
+        "completed": 0,
+        "failed": 10
+      }
+    },
+    {
+      "ok": true,
+      "status": 200,
+      "data": {
+        "success": true,
+        "processed": 0,
+        "completed": 0,
+        "failed": 0
+      }
+    }
+  ],
+  "summary": [
+    {
+      "workflow": "Marketing Loop SMS",
+      "system_key": "marketing_sms",
+      "run_id": "4e6cb98b-501a-46db-ae9c-5f31c5397e67",
+      "status": "failed",
+      "current_step": 1,
+      "last_error": "SMS failed: {\"error\":\"Unauthorized\"}",
+      "step_logs": [
+        {
+          "run_id": "4e6cb98b-501a-46db-ae9c-5f31c5397e67",
+          "step_order": 1,
+          "action_type": "send_sms",
+          "status": "failed",
+          "error": "SMS failed: {\"error\":\"Unauthorized\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:14.66+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Marketing Loop Email",
+      "system_key": "marketing_email",
+      "run_id": "033abe59-c671-460c-a8e7-c103fdd2d5fa",
+      "status": "failed",
+      "current_step": 2,
+      "last_error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+      "step_logs": [
+        {
+          "run_id": "033abe59-c671-460c-a8e7-c103fdd2d5fa",
+          "step_order": 2,
+          "action_type": "send_email",
+          "status": "failed",
+          "error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:15.934+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Quote Email",
+      "system_key": "quote_email",
+      "run_id": "64ac97d0-55a0-47c0-9d2d-0f755f0eaf53",
+      "status": "failed",
+      "current_step": 1,
+      "last_error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+      "step_logs": [
+        {
+          "run_id": "64ac97d0-55a0-47c0-9d2d-0f755f0eaf53",
+          "step_order": 1,
+          "action_type": "send_email",
+          "status": "failed",
+          "error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:17.076+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Booking Completion Email",
+      "system_key": "booking_completion",
+      "run_id": "fb86eb81-3ebc-4c3b-804c-2667dcbbd434",
+      "status": "failed",
+      "current_step": 1,
+      "last_error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+      "step_logs": [
+        {
+          "run_id": "fb86eb81-3ebc-4c3b-804c-2667dcbbd434",
+          "step_order": 1,
+          "action_type": "send_email",
+          "status": "failed",
+          "error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:18.472+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Booking Reminder Email",
+      "system_key": "booking_reminder",
+      "run_id": "e014da01-30b5-441f-9d39-dbe27bea3622",
+      "status": "failed",
+      "current_step": 1,
+      "last_error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+      "step_logs": [
+        {
+          "run_id": "e014da01-30b5-441f-9d39-dbe27bea3622",
+          "step_order": 1,
+          "action_type": "send_email",
+          "status": "failed",
+          "error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:19.902+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Payment Reminder SMS",
+      "system_key": "payment_sms",
+      "run_id": "46cfd9ec-bfd7-4d45-8fde-1b9985f68ee3",
+      "status": "failed",
+      "current_step": 2,
+      "last_error": "SMS failed: {\"error\":\"Unauthorized\"}",
+      "step_logs": [
+        {
+          "run_id": "46cfd9ec-bfd7-4d45-8fde-1b9985f68ee3",
+          "step_order": 2,
+          "action_type": "send_sms",
+          "status": "failed",
+          "error": "SMS failed: {\"error\":\"Unauthorized\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:22.603+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Review Request SMS",
+      "system_key": "review_sms",
+      "run_id": "568257d6-4364-42d5-940b-76e374f4bb8f",
+      "status": "failed",
+      "current_step": 1,
+      "last_error": "SMS failed: {\"error\":\"Unauthorized\"}",
+      "step_logs": [
+        {
+          "run_id": "568257d6-4364-42d5-940b-76e374f4bb8f",
+          "step_order": 1,
+          "action_type": "send_sms",
+          "status": "failed",
+          "error": "SMS failed: {\"error\":\"Unauthorized\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:24.172+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Daily Summary",
+      "system_key": "daily_summary",
+      "run_id": "26f08cbe-6667-4391-90c7-817a1901247e",
+      "status": "failed",
+      "current_step": 1,
+      "last_error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+      "step_logs": [
+        {
+          "run_id": "26f08cbe-6667-4391-90c7-817a1901247e",
+          "step_order": 1,
+          "action_type": "send_email",
+          "status": "failed",
+          "error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:26.537+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Cleaner Assignment SMS",
+      "system_key": "cleaner_assignment_sms",
+      "run_id": "c36d0174-94d0-4cb7-bd62-d28f9e1ec79b",
+      "status": "failed",
+      "current_step": 1,
+      "last_error": "SMS failed: {\"error\":\"Unauthorized\"}",
+      "step_logs": [
+        {
+          "run_id": "c36d0174-94d0-4cb7-bd62-d28f9e1ec79b",
+          "step_order": 1,
+          "action_type": "send_sms",
+          "status": "failed",
+          "error": "SMS failed: {\"error\":\"Unauthorized\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:28.226+00:00"
+        }
+      ]
+    },
+    {
+      "workflow": "Receipt Email",
+      "system_key": "receipt_email",
+      "run_id": "4c151df4-2551-46e3-929e-da4c507bbeba",
+      "status": "failed",
+      "current_step": 1,
+      "last_error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+      "step_logs": [
+        {
+          "run_id": "4c151df4-2551-46e3-929e-da4c507bbeba",
+          "step_order": 1,
+          "action_type": "send_email",
+          "status": "failed",
+          "error": "Resend error: {\"statusCode\":401,\"name\":\"validation_error\",\"message\":\"API key is invalid\"}",
+          "result": null,
+          "started_at": "2026-02-26T13:08:29.714+00:00"
+        }
+      ]
+    }
+  ]
+}

@@ -16,6 +16,41 @@ function normalizeList(value: unknown): string {
     .join(', ')
 }
 
+function getSiteUrl(): string {
+  return (
+    Deno.env.get('SITE_URL') ||
+    Deno.env.get('PUBLIC_SITE_URL') ||
+    Deno.env.get('APP_URL') ||
+    ''
+  )
+}
+
+function buildPublicQuoteUrl(shareToken: string, fallbackUrl?: string | null): string | null {
+  const fallback = fallbackUrl?.trim() || ''
+  if (fallback) {
+    try {
+      const parsed = new URL(fallback)
+      if (parsed.searchParams.get('quote') === shareToken) {
+        return parsed.toString()
+      }
+    } catch {
+      // Ignore malformed fallback and try env-based URL.
+    }
+  }
+
+  const siteUrl = getSiteUrl()
+  if (!siteUrl) return null
+
+  try {
+    const base = new URL(siteUrl)
+    const url = new URL('/quote', `${base.protocol}//${base.host}`)
+    url.searchParams.set('quote', shareToken)
+    return url.toString()
+  } catch {
+    return fallback || null
+  }
+}
+
 async function sendQuoteEmail(params: {
   to: string
   customerName: string
@@ -98,7 +133,7 @@ async function sendQuoteEmail(params: {
     `Account: ${bankAccountNumber}`,
     `Reference: ${quoteNumber}`,
     ``,
-    ...(shareUrl ? [`View it online: ${shareUrl}`, ``] : []),
+    ...(shareUrl ? [`View & Pay Online: ${shareUrl}`, ``] : []),
     ...(description ? [`Summary: ${description}`, ``] : []),
     `If you'd like to proceed, reply to this email.`,
     ``,
@@ -198,10 +233,11 @@ async function sendQuoteEmail(params: {
 
           ${
             shareUrl
-              ? `<p style="margin:16px 0 0;">
-                  View it online:
-                  <a href="${shareUrl}" style="color:#2563eb;">${shareUrl}</a>
-                </p>`
+              ? `<div style="margin:18px 0 0;">
+                  <a href="${shareUrl}" style="display:inline-block;background:#2563eb;color:#ffffff;padding:11px 18px;border-radius:8px;text-decoration:none;font-weight:600;">
+                    View &amp; Pay Online
+                  </a>
+                </div>`
               : ''
           }
 
@@ -253,10 +289,6 @@ Deno.serve(async (req) => {
 
   try {
   const { orgId, supabaseAdmin, org } = await resolveOrgFromRequest(req)
-  const quoteSetting = await getAutomationSetting(supabaseAdmin, orgId, 'quote_email')
-  if (!quoteSetting.enabled) {
-    return jsonResponse({ success: true, skipped: 'quote_email_disabled' })
-  }
   const resendConfig = await getOrgIntegration(supabaseAdmin, orgId, 'resend')
   const resendApiKey = resendConfig.api_key || ''
   const quoteEmailFrom = resendConfig.from_email || resendConfig.quote_email_from || 'notifications@example.com'
@@ -283,12 +315,21 @@ Deno.serve(async (req) => {
     emailOverride?: string
     testOnly?: boolean
     testEmailTo?: string
+    respectAutomationToggle?: boolean
   } = {}
 
   try {
     payload = await req.json()
   } catch {
     payload = {}
+  }
+
+  const respectAutomationToggle = payload.respectAutomationToggle !== false
+  if (respectAutomationToggle) {
+    const quoteSetting = await getAutomationSetting(supabaseAdmin, orgId, 'quote_email')
+    if (!quoteSetting.enabled) {
+      return jsonResponse({ success: true, skipped: 'quote_email_disabled' })
+    }
   }
 
   if (payload.testOnly) {
@@ -318,6 +359,7 @@ Deno.serve(async (req) => {
             'remaining_balance',
             'customer_name',
             'customer_email',
+            'share_token',
           ].join(', ')
 
   const { data: quote, error: quoteError } = payload.quoteId
@@ -363,6 +405,9 @@ Deno.serve(async (req) => {
   const serviceLabel = quote.service || 'cleaning service'
   const addressLabel = quote.address || '—'
   const addonsLabel = normalizeList(quote.addons || quote.custom_addons || [])
+  const resolvedShareUrl = quote.share_token
+    ? buildPublicQuoteUrl(String(quote.share_token), payload.shareUrl)
+    : payload.shareUrl || null
 
   await sendQuoteEmail({
     to: targetEmail,
@@ -378,7 +423,7 @@ Deno.serve(async (req) => {
     totalLabel: formatCurrency(quote.total_inc_gst),
     depositLabel: formatCurrency(quote.deposit_amount),
     remainingLabel: formatCurrency(quote.remaining_balance),
-    shareUrl: payload.shareUrl,
+    shareUrl: resolvedShareUrl,
     description: quote.description,
     resendApiKey,
     quoteEmailFrom,
